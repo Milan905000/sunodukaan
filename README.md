@@ -55,16 +55,19 @@ https://milan905000.github.io/sunodukaan/
 - If a customer interaction is missed, click **+ Add manually** and log it in a few seconds.
 - Any interaction can be clicked to correct the product / outcome / price.
 
-### Required: Add your Anthropic API key
+### AI classification — pre-configured
 
-Sunodukaan uses **Claude** to read your shop's conversations and classify each customer interaction. Without an API key, the app still records raw speech but cannot produce insights.
+Sunodukaan uses an LLM (via the **Bifrost gateway** at `gateway-buildathon.ltl.sh`) to read your shop's conversations and classify each customer interaction. A buildathon API key is already baked into the app, so it works right out of the box — no setup needed.
 
-1. Get a key at [console.anthropic.com](https://console.anthropic.com) — sign-up is free, add a small amount of credit ($5 is plenty to start).
-2. Paste it into **⚙️ Settings → Anthropic API Key**.
-3. Tap **Test AI connection** — you should see ✅.
-4. If you already used the app before adding the key, tap **Process pending transcripts** to classify everything captured so far.
+If that key ever gets rotated or rate-limited:
 
-Your key is stored only in your browser and only sent to Anthropic — nowhere else. Cost is roughly ₹0.10 per customer interaction; typical shops spend ₹150-600/month. See [docs/03-how-ai-mode-works.md](docs/03-how-ai-mode-works.md) for the full cost math.
+1. Get a new Bifrost key.
+2. Paste it into **⚙️ Settings → Bifrost API Key**.
+3. Optionally choose the model — **gpt-5.5** (default, best for Hindi) or **gpt-4o**.
+4. Tap **Test AI connection** — you should see ✅.
+5. If any conversations were captured while the key was down, tap **Process pending transcripts** to classify them retroactively.
+
+⚠️ **Note on the shipped key**: because the repo is public, the default API key is visible in `app.js` to anyone who looks. That's the standard trade-off for zero-setup buildathon apps. For a production shop tool you'd move the key to a small backend proxy instead. See [docs/03-how-ai-mode-works.md](docs/03-how-ai-mode-works.md).
 
 ---
 

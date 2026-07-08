@@ -22,8 +22,11 @@ A large network of servers spread around the world. When someone in Delhi opens 
 ### Chunk
 In this project, a "chunk" is one grouped batch of speech — everything spoken between two 12-second silences. Each chunk is treated as one customer conversation and processed together.
 
-### Claude / Claude Haiku
-Anthropic's family of AI models. **Claude Haiku 4.5** is the fastest and cheapest — Sunodukaan uses it in AI Mode.
+### Bifrost
+An LLM gateway with an OpenAI-compatible endpoint. Sunodukaan sends every conversation chunk to `gateway-buildathon.ltl.sh/v1/chat/completions`, which then routes the request to the actual model (`gpt-5.5` or `gpt-4o`).
+
+### GPT-4o / GPT-5.5
+The two LLM models available through Bifrost in this app. Selectable in **Settings → Model**. GPT-5.5 is used by default because it's the more capable one for nuanced Hindi/Hinglish classification.
 
 ### CSV (Comma-Separated Values)
 A simple spreadsheet file where each row is a line of text and each column is separated by a comma. Excel and Google Sheets can open CSVs directly. Sunodukaan can export your day's interactions as CSV.
@@ -71,7 +74,7 @@ A small database that every website gets inside your browser. Sunodukaan stores 
 Code that runs over and over. The listening-and-restarting cycle in Sunodukaan is a kind of loop: listen → transcribe → restart on silence → listen again.
 
 ### Model (AI model)
-The specific "brain" being used. For AI Mode, the exact model is `claude-haiku-4-5-20251001`. You can think of a model as a specific person you're asking questions to — different models have different skills and prices.
+The specific "brain" being used. Sunodukaan lets you pick between `gpt-5.5` (default) and `gpt-4o`. You can think of a model as a specific person you're asking questions to — different models have different skills and prices.
 
 ### Outcome
 The result of a customer interaction. Sunodukaan uses six outcomes: `sold`, `lost_expensive_here`, `lost_cheaper_elsewhere`, `lost_other`, `oos` (out of stock), `unclear`.

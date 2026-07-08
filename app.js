@@ -4,11 +4,15 @@
 
   // ----------- Storage ------------
   const KEY = 'sunodukaan.v1';
+  // Default Bifrost gateway key for out-of-the-box use.
+  // Replace with your own in Settings if this one is rotated / rate-limited.
+  const DEFAULT_API_KEY = 'sk-bf-f9ece2ee-5cb2-4da8-b361-08c98c72e597';
   const DEFAULT_STATE = {
     settings: {
       lang: 'hi-IN',
       autoRestart: true,
-      apiKey: '',
+      apiKey: DEFAULT_API_KEY,
+      model: 'gpt-5.5',
     },
     interactions: [],   // {id, ts, product, outcome, price, reason, snippet, notes, source}
     transcript: [],     // {id, ts, text}
@@ -21,12 +25,16 @@
       const raw = localStorage.getItem(KEY);
       if (!raw) return structuredClone(DEFAULT_STATE);
       const parsed = JSON.parse(raw);
-      // shallow merge to catch new default keys after upgrades
-      return {
+      const merged = {
         ...structuredClone(DEFAULT_STATE),
         ...parsed,
         settings: { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) },
       };
+      // If a returning user had an empty key saved, fall back to the shipped default.
+      if (!merged.settings.apiKey || !merged.settings.apiKey.trim()) {
+        merged.settings.apiKey = DEFAULT_API_KEY;
+      }
+      return merged;
     } catch (e) {
       console.error('load failed', e);
       return structuredClone(DEFAULT_STATE);
@@ -41,9 +49,9 @@
   const timeFmt = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const dateFmt = ts => new Date(ts).toLocaleDateString();
 
-  // ----------- AI (Anthropic) extraction — the only classifier ------------
-  const AI_ENDPOINT = 'https://api.anthropic.com/v1/messages';
-  const AI_MODEL = 'claude-haiku-4-5-20251001';
+  // ----------- AI (Bifrost gateway) extraction — the only classifier ------------
+  const AI_ENDPOINT = 'https://gateway-buildathon.ltl.sh/v1/chat/completions';
+  const AVAILABLE_MODELS = ['gpt-5.5', 'gpt-4o'];
   const AI_SYSTEM = `You extract structured retail-shop customer interactions from short conversation snippets between a shopkeeper (kirana / grocery / FMCG store owner in India) and their customers. The speech will be in Hindi, English, Hinglish (mixed), or another Indian language. The transcript is imperfect — expect misspellings, spoken numerals, brand names, and casual grammar.
 
 RETURN VALID JSON ONLY. No preamble, no code fences, no explanation.
@@ -87,19 +95,20 @@ Examples:
   async function aiExtract(chunkText) {
     const key = state.settings.apiKey?.trim();
     if (!key) throw new Error('No API key set');
+    const model = AVAILABLE_MODELS.includes(state.settings.model) ? state.settings.model : 'gpt-5.5';
     const body = {
-      model: AI_MODEL,
+      model,
       max_tokens: 1024,
-      system: AI_SYSTEM,
-      messages: [{ role: 'user', content: `Conversation:\n"""\n${chunkText}\n"""\nExtract interactions as JSON.` }],
+      messages: [
+        { role: 'system', content: AI_SYSTEM },
+        { role: 'user', content: `Conversation:\n"""\n${chunkText}\n"""\nExtract interactions as JSON.` },
+      ],
     };
     const res = await fetch(AI_ENDPOINT, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
+        'authorization': `Bearer ${key}`,
       },
       body: JSON.stringify(body),
     });
@@ -108,7 +117,7 @@ Examples:
       throw new Error(`AI request failed: ${res.status} ${t.slice(0, 200)}`);
     }
     const data = await res.json();
-    const text = data?.content?.[0]?.text || '';
+    const text = data?.choices?.[0]?.message?.content || '';
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) return [];
     let parsed;
@@ -194,7 +203,7 @@ Examples:
 
   async function processPending() {
     if (!state.settings.apiKey) {
-      toast('Add your Anthropic API key first (⚙️ Settings)');
+      toast('Add your Bifrost API key first (⚙️ Settings)');
       return;
     }
     if (state.pending.length === 0) {
@@ -628,6 +637,16 @@ Examples:
       }
     });
 
+    const m = $('#setting-model');
+    if (m) {
+      m.value = state.settings.model || 'gpt-5.5';
+      m.addEventListener('change', () => {
+        state.settings.model = m.value;
+        save();
+        toast(`Model set to ${m.value}`);
+      });
+    }
+
     $('#btn-test-ai').addEventListener('click', async () => {
       const out = $('#ai-test-result'); out.textContent = 'Testing…';
       try {
@@ -671,7 +690,7 @@ Examples:
       banner.hidden = false;
       banner.innerHTML = `
         <div>
-          <strong>⚠️ AI extraction is disabled — add your Anthropic API key to start turning conversations into insights.</strong>
+          <strong>⚠️ AI extraction is disabled — add your Bifrost API key to start turning conversations into insights.</strong>
           ${pendingCount > 0 ? `<div class="banner-sub">${pendingCount} conversation chunk${pendingCount === 1 ? '' : 's'} captured and waiting to be processed.</div>` : ''}
         </div>
         <button class="btn-primary" id="banner-goto-settings">Open Settings</button>`;
