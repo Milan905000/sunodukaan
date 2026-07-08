@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Sunodukaan — Voice Analytics for Your Shop</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🛒%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-icon">🛒</span>
+      <div>
+        <h1>Sunodukaan</h1>
+        <p class="tagline">Suno. Samjho. Bech lo.</p>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="live">🎙️ Live</button>
+      <button class="tab" data-tab="summary">📊 Summary</button>
+      <button class="tab" data-tab="log">📒 Log</button>
+      <button class="tab" data-tab="settings">⚙️ Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- LIVE TAB -->
+    <section class="tab-panel active" id="tab-live">
+      <div class="listen-card">
+        <button id="btn-listen" class="listen-btn" aria-pressed="false">
+          <span class="mic-ring"></span>
+          <span class="mic-icon">🎤</span>
+          <span id="listen-label">Start Listening</span>
+        </button>
+        <p id="listen-status" class="listen-status">Tap the mic to begin. It will listen continuously.</p>
+        <div class="quick-stats">
+          <div class="qs"><span class="qs-num" id="qs-total">0</span><span class="qs-label">Interactions today</span></div>
+          <div class="qs"><span class="qs-num" id="qs-reorder">0</span><span class="qs-label">To reorder</span></div>
+          <div class="qs"><span class="qs-num" id="qs-lost">0</span><span class="qs-label">Lost sales</span></div>
+          <div class="qs"><span class="qs-num" id="qs-revenue">₹0</span><span class="qs-label">Revenue</span></div>
+        </div>
+      </div>
+
+      <div class="live-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Live Transcript</h2>
+            <button class="link-btn" id="btn-clear-transcript">Clear</button>
+          </div>
+          <div id="transcript" class="transcript">
+            <p class="muted">Waiting for speech… Say something like <em>"Bhaiya, sugar hai kya?"</em> or <em>"क्या दूध है?"</em></p>
+          </div>
+          <div id="interim" class="interim"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Detected Interactions</h2>
+            <button class="link-btn" id="btn-add-manual">+ Add manually</button>
+          </div>
+          <div id="live-interactions" class="live-interactions">
+            <p class="muted">Interactions will appear here as customers speak.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SUMMARY TAB -->
+    <section class="tab-panel" id="tab-summary">
+      <div class="date-bar">
+        <label>Date: <input type="date" id="summary-date" /></label>
+        <button class="btn-secondary" id="btn-export-csv">⬇︎ Export CSV</button>
+        <button class="btn-secondary" id="btn-export-json">⬇︎ Export JSON</button>
+      </div>
+
+      <div class="summary-grid">
+        <div class="metric-card">
+          <div class="metric-label">Total Interactions</div>
+          <div class="metric-value" id="sm-total">0</div>
+        </div>
+        <div class="metric-card success">
+          <div class="metric-label">Sales Made</div>
+          <div class="metric-value" id="sm-sold">0</div>
+          <div class="metric-sub" id="sm-revenue">₹0</div>
+        </div>
+        <div class="metric-card warn">
+          <div class="metric-label">Lost Sales</div>
+          <div class="metric-value" id="sm-lost">0</div>
+        </div>
+        <div class="metric-card danger">
+          <div class="metric-label">Out of Stock Asks</div>
+          <div class="metric-value" id="sm-oos">0</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>🧾 To Reorder — Products asked but not in stock</h2>
+          <span class="pill" id="reorder-count">0</span>
+        </div>
+        <div id="reorder-list" class="reorder-list">
+          <p class="muted">Nothing yet.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>💸 Lost Sales — Reasons breakdown</h2>
+        </div>
+        <div id="lost-breakdown" class="lost-breakdown">
+          <p class="muted">Nothing yet.</p>
+        </div>
+        <div id="lost-list" class="lost-list"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>✅ Successful Sales</h2>
+        </div>
+        <div id="sold-list" class="sold-list">
+          <p class="muted">No sales recorded yet today.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- LOG TAB -->
+    <section class="tab-panel" id="tab-log">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>All Interactions</h2>
+          <div class="log-filters">
+            <select id="log-filter-outcome">
+              <option value="all">All outcomes</option>
+              <option value="sold">Sold</option>
+              <option value="lost">Lost (not purchased)</option>
+              <option value="oos">Out of stock</option>
+              <option value="unclear">Unclear</option>
+            </select>
+            <input type="date" id="log-filter-date" />
+            <button class="btn-danger" id="btn-clear-day">Clear day</button>
+          </div>
+        </div>
+        <div id="log-list" class="log-list"></div>
+      </div>
+    </section>
+
+    <!-- SETTINGS TAB -->
+    <section class="tab-panel" id="tab-settings">
+      <div class="panel">
+        <div class="panel-head"><h2>🎧 Recognition</h2></div>
+        <div class="setting-row">
+          <label for="setting-lang">Language</label>
+          <select id="setting-lang">
+            <option value="hi-IN">Hindi (India) — हिन्दी</option>
+            <option value="en-IN">English (India)</option>
+            <option value="en-US">English (US)</option>
+            <option value="bn-IN">Bengali (India)</option>
+            <option value="ta-IN">Tamil (India)</option>
+            <option value="te-IN">Telugu (India)</option>
+            <option value="mr-IN">Marathi (India)</option>
+            <option value="gu-IN">Gujarati (India)</option>
+            <option value="pa-IN">Punjabi (India)</option>
+            <option value="kn-IN">Kannada (India)</option>
+            <option value="ml-IN">Malayalam (India)</option>
+          </select>
+          <small>Hindi works best for a mix of Hindi + Hinglish speech.</small>
+        </div>
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="setting-auto-restart" checked />
+            Auto-restart on silence (always-on mode)
+          </label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>🤖 AI Extraction (optional but recommended)</h2></div>
+        <p class="muted small">Without a key, the app uses smart keyword rules. With an Anthropic API key it uses Claude for much more accurate Hindi understanding. Your key stays on your device — it is never sent anywhere except to Anthropic.</p>
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="setting-ai-enabled" />
+            Use Claude AI for extraction
+          </label>
+        </div>
+        <div class="setting-row">
+          <label for="setting-api-key">Anthropic API Key</label>
+          <input type="password" id="setting-api-key" placeholder="sk-ant-..." autocomplete="off" />
+          <small>Get one at console.anthropic.com. Stored only in your browser (localStorage).</small>
+        </div>
+        <div class="setting-row">
+          <button class="btn-secondary" id="btn-test-ai">Test AI connection</button>
+          <span id="ai-test-result"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>💾 Data</h2></div>
+        <div class="setting-row">
+          <button class="btn-secondary" id="btn-export-all">Export all data (JSON)</button>
+          <button class="btn-secondary" id="btn-import">Import data</button>
+          <input type="file" id="import-file" accept="application/json" hidden />
+          <button class="btn-danger" id="btn-wipe">Delete all data</button>
+        </div>
+        <p class="muted small">Data is stored locally in your browser. Export regularly if you want a backup.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>ℹ️ About</h2></div>
+        <p>Sunodukaan listens to your shop's conversations and turns them into a daily summary — what customers asked for, what you didn't have, and why sales were lost.</p>
+        <p class="muted small">Version 1.0 · Runs entirely in your browser · No account needed</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Manual add modal -->
+  <div class="modal" id="modal-manual" hidden>
+    <div class="modal-card">
+      <h3>Add interaction manually</h3>
+      <label>Product <input type="text" id="m-product" placeholder="e.g. Dettol Soap" /></label>
+      <label>Outcome
+        <select id="m-outcome">
+          <option value="sold">Sold ✅</option>
+          <option value="lost_expensive_here">Lost — customer said my price is too high</option>
+          <option value="lost_cheaper_elsewhere">Lost — cheaper elsewhere</option>
+          <option value="lost_other">Lost — other reason</option>
+          <option value="oos">I didn't have it (reorder)</option>
+        </select>
+      </label>
+      <label>Price (₹) <input type="number" id="m-price" placeholder="Optional" /></label>
+      <label>Notes <textarea id="m-notes" rows="2"></textarea></label>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="m-cancel">Cancel</button>
+        <button class="btn-primary" id="m-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-edit" hidden>
+    <div class="modal-card">
+      <h3>Edit interaction</h3>
+      <label>Product <input type="text" id="e-product" /></label>
+      <label>Outcome
+        <select id="e-outcome">
+          <option value="sold">Sold ✅</option>
+          <option value="lost_expensive_here">Lost — my price too high</option>
+          <option value="lost_cheaper_elsewhere">Lost — cheaper elsewhere</option>
+          <option value="lost_other">Lost — other</option>
+          <option value="oos">Out of stock (reorder)</option>
+          <option value="unclear">Unclear</option>
+        </select>
+      </label>
+      <label>Price (₹) <input type="number" id="e-price" /></label>
+      <label>Notes <textarea id="e-notes" rows="2"></textarea></label>
+      <label>Transcript snippet <textarea id="e-snippet" rows="3" readonly></textarea></label>
+      <div class="modal-actions">
+        <button class="btn-danger" id="e-delete">Delete</button>
+        <button class="btn-secondary" id="e-cancel">Cancel</button>
+        <button class="btn-primary" id="e-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
