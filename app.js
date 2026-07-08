@@ -80,17 +80,32 @@ Outcome definitions (very important — classify carefully):
 Rules for extraction:
 1. Only extract interactions where a REAL product is discussed. Ignore pure chit-chat, greetings, weather talk.
 2. If several products are discussed in the same snippet, return one interaction per product.
-3. Normalize product names to their standard English name. If a brand is spoken, keep it in the name ("Dettol Soap", not just "Soap").
+3. Normalize product names to their standard English name. If a brand is spoken, keep it in the name ("Dettol Soap", not just "Soap"). Preserve size / quantity if mentioned ("Vaseline Body Lotion 100ml").
 4. Prices: capture the number the shopkeeper quoted or the number the customer heard. If spoken in words (e.g., "पैंतालीस"), convert to digits. If no price is mentioned, use null.
 5. If the classification would be lost_expensive_here vs lost_cheaper_elsewhere and both signals appear, prefer lost_cheaper_elsewhere (it's the more specific reason).
 6. Do not invent outcomes. If truly ambiguous, use "unclear".
 7. If nothing product-related is found, return {"interactions": []}.
 
+⚠️ CRITICAL — resolve who is agreeing with whom before classifying:
+- A "sold" outcome ONLY applies when the customer commits to buying FROM THIS SHOP. Phrases like "theek hai", "le lete hain", "ok", "haan", "chalo" are AMBIGUOUS on their own — you must check the immediately preceding context.
+- If the shopkeeper says "उससे ले लो" / "wahan se le lo" / "usse le lo" / "unse le lo" / "go take from him" / "take from that shop" — this is the shopkeeper telling the customer to buy from a COMPETITOR. If the customer then says "ठीक है" / "theek hai" / "le lete hain" / "ok" — the customer is agreeing to leave. Classify as lost_cheaper_elsewhere (or lost_other if no competitor price was quoted).
+- Similarly, if the customer previously mentioned another shop's lower price and the shopkeeper does not match it, a following "theek hai le lete hain" almost always means "OK, I'll take (from the other place)" — NOT a sale.
+- The word "बाजू वाला दुकान" / "baju wala dukaan" / "bagal ki dukaan" / "next-door shop" is an explicit competitor reference — factor it in.
+- When the shopkeeper says "मेरे पास तो X ka hi hai" ("mine is only for X") followed by suggesting the other shop, they are refusing to negotiate, and the interaction is not going to end in a sale UNLESS the customer says something like "chalo phir bhi de do" / "OK phir bhi le lunga" / an explicit reversal.
+- When in doubt between sold vs lost_cheaper_elsewhere and a competitor was named in the same conversation, prefer lost_cheaper_elsewhere.
+
+Reasoning: before choosing an outcome, mentally list — (a) who last spoke, (b) whether they were agreeing to buy from THIS shop or from a competitor mentioned earlier. Only mark "sold" when you are confident the commitment is to this shop.
+
 Examples:
 - "sugar hai kya? haan 45 rupaye. mahenga hai chodo" → {"interactions":[{"product":"Sugar","outcome":"lost_expensive_here","price":45,"reason":"Customer said price too high","snippet":"sugar hai kya? haan 45 rupaye. mahenga hai chodo"}]}
 - "dettol soap chahiye" / "nahi hai kal aayega" → {"interactions":[{"product":"Dettol Soap","outcome":"oos","price":null,"reason":"Not in stock — kal aayega","snippet":"dettol soap chahiye ... nahi hai kal aayega"}]}
 - "parle-g bada packet dena 20 ka. haan pack karo" → {"interactions":[{"product":"Parle-G Biscuits","outcome":"sold","price":20,"reason":null,"snippet":"parle-g bada packet dena 20 ka. haan pack karo"}]}
-- "amul milk aur bread, milk 30 aur bread 40. bread aur jagah 30 mein milta hai, sirf milk de do" → {"interactions":[{"product":"Amul Milk","outcome":"sold","price":30,"reason":null,"snippet":"..."},{"product":"Bread","outcome":"lost_cheaper_elsewhere","price":40,"reason":"Customer said it's cheaper at another shop","snippet":"..."}]}`;
+- "amul milk aur bread, milk 30 aur bread 40. bread aur jagah 30 mein milta hai, sirf milk de do" → {"interactions":[{"product":"Amul Milk","outcome":"sold","price":30,"reason":null,"snippet":"..."},{"product":"Bread","outcome":"lost_cheaper_elsewhere","price":40,"reason":"Customer said it's cheaper at another shop","snippet":"..."}]}
+- "vaseline body lotion 100ml hai? 30 ka hai. bagal wale dukaan wala to 25 mein de raha hai, mahenga lag rahe ho. mere pas to 30 ka hi hai, usse 25 mein mil raha to usse le lo. theek hai bhaiya le lete hain" → {"interactions":[{"product":"Vaseline Body Lotion 100ml","outcome":"lost_cheaper_elsewhere","price":30,"reason":"Customer went to next-door shop offering ₹25","snippet":"...usse 25 mein mil raha to usse le lo. theek hai bhaiya le lete hain"}]}
+- "colgate 50 ka hai. mahenga hai. lagta hai wahi le lete hain aur jagah se" → {"interactions":[{"product":"Colgate Toothpaste","outcome":"lost_cheaper_elsewhere","price":50,"reason":"Customer decided to buy from another shop","snippet":"..."}]}
+- "maggi 15 ka. theek hai de do" → {"interactions":[{"product":"Maggi","outcome":"sold","price":15,"reason":null,"snippet":"..."}]}
+- "atta 5kg ka bag, 250. haan theek hai le lete hain, pack kar do" → {"interactions":[{"product":"Wheat Flour 5kg","outcome":"sold","price":250,"reason":null,"snippet":"..."}]}
+`;
 
   async function aiExtract(chunkText) {
     const key = state.settings.apiKey?.trim();
@@ -99,6 +114,7 @@ Examples:
     const body = {
       model,
       max_tokens: 1024,
+      temperature: 0,
       messages: [
         { role: 'system', content: AI_SYSTEM },
         { role: 'user', content: `Conversation:\n"""\n${chunkText}\n"""\nExtract interactions as JSON.` },
@@ -561,6 +577,44 @@ Examples:
     toast('Deleted');
   }
 
+  async function rerunEdit() {
+    const i = state.interactions.find(x => x.id === editingId);
+    if (!i) return;
+    const snippet = $('#e-snippet').value.trim() || i.snippet || i.product;
+    if (!snippet) { toast('No snippet to re-run — edit the transcript field first'); return; }
+    if (!state.settings.apiKey) { toast('Add your Bifrost API key first (⚙️ Settings)'); return; }
+    const btn = $('#e-rerun');
+    btn.disabled = true; btn.textContent = 'Re-running…';
+    try {
+      const items = await aiExtract(snippet);
+      if (items.length === 0) {
+        toast('AI returned no interaction — leaving record as-is');
+      } else {
+        // Pick the interaction whose product best matches (or the first one)
+        const match = items.find(x => (x.product || '').toLowerCase() === (i.product || '').toLowerCase()) || items[0];
+        i.product = match.product || i.product;
+        i.outcome = match.outcome || i.outcome;
+        i.price = (match.price ?? i.price ?? null);
+        i.reason = match.reason || i.reason || null;
+        i.snippet = match.snippet || snippet;
+        i.source = 'ai';
+        save();
+        // Refresh modal fields
+        $('#e-product').value = i.product;
+        $('#e-outcome').value = i.outcome;
+        $('#e-price').value = i.price ?? '';
+        $('#e-notes').value = i.notes || '';
+        $('#e-snippet').value = i.snippet || '';
+        renderAll();
+        toast(`Re-classified as: ${outcomeLabel(i.outcome)}`);
+      }
+    } catch (e) {
+      toast('AI failed: ' + e.message.slice(0, 80));
+    } finally {
+      btn.disabled = false; btn.textContent = '🔄 Re-run AI';
+    }
+  }
+
   // ----------- Export / Import ------------
   function download(filename, text, mime = 'text/plain') {
     const blob = new Blob([text], { type: mime });
@@ -736,6 +790,7 @@ Examples:
     document.getElementById('e-save').addEventListener('click', saveEdit);
     document.getElementById('e-cancel').addEventListener('click', closeEdit);
     document.getElementById('e-delete').addEventListener('click', deleteEdit);
+    document.getElementById('e-rerun').addEventListener('click', rerunEdit);
 
     // Summary
     document.getElementById('summary-date').value = todayStr();

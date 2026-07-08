@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Sunodukaan — Voice Analytics for Your Shop</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🛒%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css?v=3" />
+  <link rel="stylesheet" href="styles.css?v=4" />
 </head>
 <body>
   <header class="app-header">
@@ -262,9 +262,10 @@
       </label>
       <label>Price (₹) <input type="number" id="e-price" /></label>
       <label>Notes <textarea id="e-notes" rows="2"></textarea></label>
-      <label>Transcript snippet <textarea id="e-snippet" rows="3" readonly></textarea></label>
+      <label>Transcript snippet <textarea id="e-snippet" rows="3" placeholder="You can edit this and then tap Re-run AI to reclassify."></textarea></label>
       <div class="modal-actions">
         <button class="btn-danger" id="e-delete">Delete</button>
+        <button class="btn-secondary" id="e-rerun">🔄 Re-run AI</button>
         <button class="btn-secondary" id="e-cancel">Cancel</button>
         <button class="btn-primary" id="e-save">Save</button>
       </div>
@@ -273,6 +274,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
