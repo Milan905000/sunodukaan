@@ -15,6 +15,20 @@ Runs 100% in your browser. No backend. No account. Your data stays on your devic
 
 ---
 
+## 📚 Want to understand how it works?
+
+Every part of the app is explained in plain English inside the [**`docs/`**](docs/) folder — start with [docs/README.md](docs/README.md).
+
+- [How Listening Works](docs/01-how-listening-works.md) — mic + always-on trick
+- [How Understanding Works](docs/02-how-understanding-works.md) — the extraction logic (⭐ most important)
+- [How AI Mode Works](docs/03-how-ai-mode-works.md) — Claude integration
+- [How Storage Works](docs/04-how-storage-works.md) — where your data lives
+- [How the Summary Works](docs/05-how-summary-works.md) — reorder list, lost-sales math
+- [How Hosting Works](docs/06-how-hosting-works.md) — GitHub Pages
+- [Glossary](docs/07-glossary.md) — every technical word explained
+
+---
+
 ## 🚀 Live app
 
 Once GitHub Pages is enabled (see below), your app will be live at:
