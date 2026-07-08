@@ -1,6 +1,6 @@
 # 2️⃣ How Understanding Works
 
-*(This is the heart of the app: how a stream of raw text becomes structured business data — product names, outcomes, and reasons.)*
+*(The heart of the app: how a stream of raw text becomes structured business data — product names, outcomes, and reasons — using Claude.)*
 
 Let's use a real example throughout this document. Say a customer walks in and this conversation happens:
 
@@ -15,6 +15,8 @@ Product:  Sugar
 Outcome:  Lost — my price too high
 Price:    ₹45
 ```
+
+There is **only one way** the app does this classification: it sends the conversation to **Claude** (Anthropic's language model) and reads the structured answer back. That's why you must add an Anthropic API key in Settings for the app to work — without it, the app can still record raw speech, but it cannot understand it.
 
 ---
 
@@ -44,9 +46,9 @@ function scheduleFlush() {
 }
 ```
 
-Whenever someone speaks, the timer resets. When 12 seconds pass with no new speech, `flushChunk` runs — and *that* is when the understanding logic kicks in.
+Whenever someone speaks, the timer resets. When 12 seconds pass with no new speech, `flushChunk` runs — and *that* is when the classification kicks in.
 
-Why 12 seconds? Long enough to survive a natural pause ("uhh, wait let me check my list"), short enough that customer #1 and customer #2 don't get merged into the same chunk. You could change this number in the code if you have a very fast-moving shop.
+Why 12 seconds? Long enough to survive a natural pause ("uhh, wait let me check my list"), short enough that customer #1 and customer #2 don't get merged. You could change this number in the code if you have a very fast-moving shop.
 
 ---
 
@@ -66,261 +68,180 @@ The app joins these into one string and now needs to extract three things:
 2. **What was the outcome?** (Was it sold? Was it a loss? Was it out of stock?)
 3. **Why**, if it was a lost sale?
 
-There are two ways the app does this:
-
-- 🧠 **Rules mode** — pattern matching against a built-in list of Hindi/English keywords. Fast, free, no internet needed beyond the speech engine, but not perfect.
-- 🤖 **AI mode (optional)** — send the chunk to Claude and let it read the conversation intelligently. Much more accurate. See [How AI Mode Works](03-how-ai-mode-works.md).
-
-The rest of this document explains **Rules mode** because that's what runs by default.
+Claude does all three at once.
 
 ---
 
-## Step C — Finding the product name
+## Step C — Handing it to Claude
 
-The app has a built-in dictionary of about **60 common Indian grocery / FMCG products**. For each product, it stores every reasonable way a customer might refer to it.
+The app sends the chunk to Claude with two things attached:
 
-Here's a real entry from the code (`app.js`):
+1. **A system prompt** — permanent instructions telling Claude what its job is, what the output format looks like, and what each classification means.
+2. **The chunk text** — the actual conversation to analyze.
 
-```javascript
-{ en: 'Sugar', keys: ['sugar', 'chini', 'cheeni', 'shakar', 'shakkar', 'चीनी', 'शक्कर'] }
-```
-
-That single product has **7 different keys** covering:
-
-- 🇬🇧 English word — `sugar`
-- 🇮🇳 Hinglish spellings — `chini`, `cheeni`
-- Regional variants — `shakar`, `shakkar`
-- 🕉️ Devanagari script — `चीनी`, `शक्कर`
-
-For each chunk of speech, the app does this:
+The Claude API call is a few lines of code (`app.js`):
 
 ```javascript
-function detectProduct(text) {
-  const lower = text.toLowerCase();
-  let bestMatch = null;
-  let bestLen = 0;
-
-  for (const p of PRODUCTS) {
-    for (const k of p.keys) {
-      if (lower.includes(k) && k.length > bestLen) {
-        bestMatch = p.en;
-        bestLen = k.length;
-      }
-    }
-  }
-  return bestMatch;
+async function aiExtract(chunkText) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': userKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      system: AI_SYSTEM,
+      messages: [{ role: 'user', content: `Conversation:\n"""\n${chunkText}\n"""\nExtract...` }],
+      max_tokens: 1024,
+    }),
+  });
+  // Parse the JSON that comes back
 }
 ```
 
-In plain English:
+Claude responds in about 1-2 seconds with structured JSON. The app parses it and saves the interactions.
 
-> "Go through every product in the dictionary. For each one, check every possible spelling. If one of those spellings appears in the customer's text, mark it as a match. If multiple products match, keep the one with the longest matching phrase (because that's usually more specific)."
-
-For our example, the text contains the word `sugar` → the app records **`Sugar`** as the product.
-
-The "longest match" rule is important. Consider "coconut oil" vs "oil" — if a customer says "coconut oil chahiye", both `oil` and `hair oil` (which contains "coconut oil" in its keys) match. Because "coconut oil" (11 letters) is longer than "oil" (3 letters), the more specific match wins.
-
-The full product dictionary covers:
-
-- **Staples**: sugar, salt, rice, atta, dal, tea, coffee, oil, ghee
-- **Dairy**: milk, curd, paneer, butter, cheese, bread, eggs
-- **Snacks**: biscuits, chips, namkeen, chocolate, Maggi
-- **Beverages**: Coke, Pepsi, Thums Up, Limca, Sprite, Frooti/Maaza, water, juice
-- **Personal care**: soap, shampoo, toothpaste, hair oil, cream, sanitary pads
-- **Cleaning**: detergent, dishwash, floor cleaner, agarbatti, matches
-- **Vegetables**: onion, potato, tomato, ginger, garlic, lemon, coriander
-- **Others**: batteries, mosquito repellent, cigarettes, gutkha
-
-Plus **all the major Indian brand names** (Parle-G, Amul, Dettol, Colgate, Surf, Ariel, Nirma, Bisleri, Haldiram, etc.) so if a customer asks by brand it still gets categorized correctly.
+**The most important part** is the system prompt — it's how we tell Claude exactly how to classify things.
 
 ---
 
-## Step D — Figuring out the outcome
+## Step D — The system prompt (how we teach Claude)
 
-Once we know the product, we need to know what happened. The rules are stacked in order of priority:
+Below is the actual system prompt used in the code. Read it slowly — it defines everything about how the app understands your shop.
 
-### Rule 1: Was the item unavailable?
+> You extract structured retail-shop customer interactions from short conversation snippets between a shopkeeper (kirana / grocery / FMCG store owner in India) and their customers. The speech will be in Hindi, English, Hinglish (mixed), or another Indian language. The transcript is imperfect — expect misspellings, spoken numerals, brand names, and casual grammar.
+>
+> RETURN VALID JSON ONLY. No preamble, no code fences, no explanation.
+>
+> **Schema:**
+> ```json
+> {
+>   "interactions": [
+>     {
+>       "product": "<English product name — normalize brand+category>",
+>       "outcome": "sold | lost_expensive_here | lost_cheaper_elsewhere | lost_other | oos | unclear",
+>       "price": <number in INR or null>,
+>       "reason": "<short human-readable reason or null>",
+>       "snippet": "<verbatim spoken text, ≤200 chars>"
+>     }
+>   ]
+> }
+> ```
+>
+> **Outcome definitions** (very important — classify carefully):
+>
+> - **sold** — the customer clearly decided to buy (phrases like "de do", "pack karo", "theek hai", "le lunga", "chalo", "ok").
+> - **lost_expensive_here** — customer refused because THIS SHOP'S price is too high ("mahenga hai", "zyada hai", "kam karo", "discount do").
+> - **lost_cheaper_elsewhere** — customer said they can get it cheaper somewhere else ("wahan sasta milta hai", "dusri dukan pe sasta", "aur jagah kam mein").
+> - **lost_other** — customer did not buy for some other reason (not needed now, will come back later, just asking, changed mind) — NOT because of price and NOT because you were out of stock.
+> - **oos** — the SHOPKEEPER said the item is not in stock, will come tomorrow, is finished ("nahi hai", "khatam ho gaya", "kal aayega", "stock nahi"). This means reorder.
+> - **unclear** — a product was clearly mentioned but the outcome cannot be determined.
+>
+> **Rules for extraction:**
+>
+> 1. Only extract interactions where a REAL product is discussed. Ignore pure chit-chat, greetings, weather talk.
+> 2. If several products are discussed in the same snippet, return one interaction per product.
+> 3. Normalize product names to their standard English name. If a brand is spoken, keep it in the name ("Dettol Soap", not just "Soap").
+> 4. Prices: capture the number quoted. If spoken in words (e.g., "पैंतालीस"), convert to digits. If no price is mentioned, use null.
+> 5. If lost_expensive_here vs lost_cheaper_elsewhere both apply, prefer lost_cheaper_elsewhere (it's more specific).
+> 6. Do not invent outcomes. If truly ambiguous, use "unclear".
+> 7. If nothing product-related is found, return `{"interactions": []}`.
 
-The app looks for phrases that indicate the shopkeeper said "we don't have it":
-
-```javascript
-const AVAIL_NO = [
-  'nahi hai', 'नहीं है', 'khatam', 'खतम',
-  'out of stock', 'stock nahi', 'stock khatam',
-  'kal aayega', 'kal aa jayega', 'abhi nahi',
-  'khatm ho gaya', 'नहीं मिलेगा'
-];
-```
-
-If any of these appear anywhere in the chunk, the outcome is **`oos`** (out-of-stock) and this product gets added to the **reorder list**.
-
-### Rule 2: Did the customer decide to buy?
-
-Positive purchase phrases:
-
-```javascript
-const BUY_YES = [
-  'de do', 'de dijiye', 'pack karo', 'दे दो',
-  'le lunga', 'लूँगा', 'theek hai', 'ठीक है',
-  'ok de do', 'chalo', 'pack it'
-];
-```
-
-Any of these = outcome **`sold`**. The price captured in the chunk becomes the sale price.
-
-### Rule 3: Did the customer refuse because it was too expensive here?
-
-```javascript
-const REJ_EXPENSIVE_HERE = [
-  'mahenga', 'mehnga', 'महँगा', 'महंगा',
-  'expensive', 'costly', 'jyada hai', 'zyada hai',
-  'ज़्यादा है', 'kam kar do', 'discount',
-  'high price', 'itna nahi'
-];
-```
-
-If any of these appear = outcome **`lost_expensive_here`** ("my price is too high").
-
-### Rule 4: Did the customer refuse because they get it cheaper somewhere else?
-
-```javascript
-const REJ_CHEAPER_ELSEWHERE = [
-  'sasta milta', 'wahan sasta', 'aur sasta',
-  'सस्ता मिलता', 'aur jagah', 'dusri jagah',
-  'दूसरी जगह', 'other shop', 'wholesale',
-  'दुकान पर सस्ता'
-];
-```
-
-If any of these appear = outcome **`lost_cheaper_elsewhere`** ("cheaper elsewhere").
-
-### Rule 5: Did they refuse for some other reason?
-
-```javascript
-const BUY_NO = [
-  'nahi lena', 'nahi chahiye', 'नहीं चाहिए',
-  'chodo', 'rehne do', 'रहने दो',
-  'kal aaunga', 'baad mein', 'बाद में', 'skip'
-];
-```
-
-If any of these appear (and none of the more specific rules did) = outcome **`lost_other`**.
-
-### Rule 6: If none of the above matched
-
-The outcome is marked **`unclear`**. You can then open it in the Log tab and correct it manually.
-
-### The priority order
-
-Here's the actual code that decides:
-
-```javascript
-if (availableSaid === false) {
-  outcome = 'oos';
-} else if (bought === true) {
-  outcome = 'sold';
-} else if (cheaperElsewhere) {
-  outcome = 'lost_cheaper_elsewhere';
-} else if (expensiveHere) {
-  outcome = 'lost_expensive_here';
-} else if (bought === false) {
-  outcome = 'lost_other';
-} else {
-  outcome = 'unclear';
-}
-```
-
-Reading top-to-bottom:
-
-1. If the shopkeeper said "nahi hai" → **out of stock** (nothing else matters).
-2. Otherwise, if the customer said "de do" → **sold**.
-3. Otherwise, if they mentioned cheaper elsewhere → **cheaper elsewhere** (this beats "expensive here" because it's more specific).
-4. Otherwise, if they mentioned expensive → **too expensive here**.
-5. Otherwise, if they said "nahi" or "chodo" without a clear reason → **lost, other**.
-6. Otherwise → **unclear**.
+The prompt also includes **worked examples** so Claude sees exactly how a sugar/soap/milk snippet should be turned into JSON. Few-shot examples make the model much more consistent.
 
 ---
 
-## Step E — Pulling out the price
+## Step E — Reading Claude's answer
 
-Prices in Indian speech look like these:
-
-- "45 rupaye kilo"
-- "₹45"
-- "Rs 45"
-- "45 rupees"
-- "पैंतालीस रुपये"
-
-The app uses **regular expressions** (patterns that match text) to spot them:
-
-```javascript
-const PRICE_RE = /(?:₹|rs\.?|rupees?|rupaye|रुपये|रुपैया)\s*(\d{1,5})|(\d{1,5})\s*(?:rs\.?|rupees?|rupaye|रुपये)/i;
-```
-
-In plain English:
-
-> "Find either a currency word followed by digits (`₹45`, `Rs 45`), or digits followed by a currency word (`45 rupaye`, `45 Rs`)."
-
-For our example — "**45 rupaye kilo**" — the pattern captures **`45`** as the price.
-
-Prices spoken purely in words like "पैंतालीस" won't be caught by rules mode. AI mode handles those.
-
----
-
-## Step F — Bringing it all together
-
-Let's replay our example with what the app actually stores:
-
-Input chunk:
-```
-"Bhaiya, sugar hai kya? Haan, 45 rupaye kilo. Arey bahot mahenga hai, chodo."
-```
-
-Processing:
-
-| Check | Result |
-|---|---|
-| Product? | `sugar` → **Sugar** ✅ |
-| Available said no? | No `nahi hai` found |
-| Bought said yes? | No `de do` found |
-| Cheaper elsewhere? | No match |
-| Expensive here? | `mahenga` found ✅ |
-| Bought said no? | `chodo` found |
-| Price? | `45 rupaye` → **45** ✅ |
-
-Outcome verdict: because "expensive here" matched before we got to "lost_other" in the priority order, **outcome = `lost_expensive_here`**.
-
-Stored record:
+For our sample conversation, Claude will return something like:
 
 ```json
 {
-  "id": "abc123",
-  "ts": "2026-07-08T10:32:15.234Z",
-  "product": "Sugar",
-  "outcome": "lost_expensive_here",
-  "price": 45,
-  "reason": "My price too high",
-  "snippet": "Bhaiya, sugar hai kya? Haan, 45 rupaye kilo. Arey bahot mahenga hai, chodo.",
-  "source": "rules"
+  "interactions": [
+    {
+      "product": "Sugar",
+      "outcome": "lost_expensive_here",
+      "price": 45,
+      "reason": "Customer said the price is too high",
+      "snippet": "sugar hai kya? Haan, 45 rupaye kilo. Arey bahot mahenga hai, chodo."
+    }
+  ]
 }
 ```
 
-This is the record that shows up in your dashboard, in the log, and in the daily summary.
+The app parses this JSON, wraps each `interaction` with a unique ID and timestamp, and pushes it into your list of records. Everything you see in the dashboard and summary is built from these records.
 
 ---
 
-## What the rule-based system is bad at
+## Why this is much better than keyword matching
 
-Let's be honest about limits:
+Claude doesn't just spot words — it understands the meaning of the sentence. For example:
 
-- **Sarcasm or negation trickiness**: If a customer says "*sugar mahenga nahi hai*" (sugar is *not* expensive) — the app sees "mahenga" and flags it as a lost sale even though the customer probably bought it.
-- **Products not in the dictionary**: If someone asks for "Real Juice Mango 1L Tetra Pack" — the app catches "juice" but loses all the detail.
-- **Multiple products in one chunk**: If a customer asks for sugar, soap, and biscuits in one visit — the app finds the strongest match (probably one of them) and misses the other two.
-- **Confusing conversations**: If the customer keeps changing their mind, the rules will often land on `unclear`.
+### Case 1 — Negation
 
-That's why **AI Mode** exists — it uses Claude to actually understand the conversation. See [How AI Mode Works](03-how-ai-mode-works.md).
+> *"Sugar mahenga NAHI hai, de do."* ("Sugar is NOT expensive, give me some.")
 
-Also, remember: every interaction can be edited or added manually. When in doubt, just tap it and fix it.
+A keyword-matching system would see "mahenga" and classify this as a lost sale.
+
+Claude reads "mahenga NAHI hai" and correctly classifies it as **sold**.
+
+### Case 2 — Multiple products in one visit
+
+> *"Amul milk aur bread. Milk 30 aur bread 40. Bread aur jagah 30 mein milta hai, sirf milk de do."*
+> ("Amul milk and bread. Milk 30 and bread 40. Bread costs 30 elsewhere, just give me the milk.")
+
+Claude returns TWO interactions:
+
+```json
+{
+  "interactions": [
+    { "product": "Amul Milk", "outcome": "sold", "price": 30, ... },
+    { "product": "Bread", "outcome": "lost_cheaper_elsewhere", "price": 40, ... }
+  ]
+}
+```
+
+That's near-impossible with keyword rules.
+
+### Case 3 — Unknown brands
+
+> *"Bhaiya, Yippee noodles 5 rupaye ka packet dena."*
+
+Even if "Yippee" isn't in any dictionary, Claude recognizes it as a noodles brand and returns `"product": "Yippee Noodles"`. Rules would either miss it or, at best, classify it as "Maggi" incorrectly.
+
+### Case 4 — Price in words
+
+> *"पैंतालीस रुपये है bhaiya, ठीक है le lunga."*
+
+Claude reads "पैंतालीस" (forty-five) and returns `"price": 45`. A keyword-based extractor would need to encode every Hindi number word to catch that.
+
+---
+
+## What happens when the API call fails
+
+Real life has hiccups: bad internet, an invalid API key, or Anthropic temporarily throttling requests. Sunodukaan handles this without losing your data:
+
+```javascript
+try {
+  items = await aiExtract(text);
+} catch (e) {
+  // Save the chunk to a pending queue instead of dropping it
+  state.pending.push({ id: uid(), ts, text });
+  save();
+}
+```
+
+In practice:
+
+- The **raw transcript is always kept** the moment the mic hears it — before extraction is even attempted.
+- If Claude fails to classify a chunk, it goes into a **pending queue**.
+- A banner shows up at the top of the app: *"N chunks queued for AI processing"* with a **Process now** button.
+- The same happens if you use the app before setting your API key: the transcript is captured, and once you paste your key in Settings, tap **Process pending transcripts** and everything gets classified retroactively.
+
+**You never lose spoken data**, even if the AI is temporarily unavailable.
 
 ---
 
@@ -333,15 +254,25 @@ Split into chunks by 12-second silences
    ↓
 For each chunk:
    ↓
-Match against ~60 product dictionaries → product name
-Match against reason keyword lists → outcome + reason
-Match against price patterns → price
+Send it to Claude with the system prompt
    ↓
-Save a structured record
+Claude returns structured JSON: product + outcome + price + reason
+   ↓
+Save each interaction to storage
+   ↓
+Dashboard updates
 ```
 
-That's it. The whole "AI understanding" of the app is layered pattern matching — nothing magical, and nothing that requires the internet beyond what Google's speech engine already needs.
+There is no keyword list. No priority rules. No brittle regex. The entire classification is Claude reading the conversation like a human clerk would.
 
 ---
 
-**Next:** [3️⃣ How AI Mode Works →](03-how-ai-mode-works.md)
+## Limits to be aware of
+
+- Claude is very good but not perfect. If a conversation is genuinely ambiguous, it will (correctly) mark it as `unclear`. Open it in the Log tab and fix it manually.
+- Very long chunks (multiple minutes of speech) get truncated at Claude's token limit. In practice, the 12-second silence rule keeps chunks short.
+- The API costs money — roughly ₹0.03 per customer interaction. That is described in the [next doc](03-how-ai-mode-works.md).
+
+---
+
+**Next:** [3️⃣ How the AI Integration Works →](03-how-ai-mode-works.md)

@@ -1,45 +1,27 @@
-# 3️⃣ How AI Mode Works
+# 3️⃣ How the AI Integration Works
 
-*(Optional feature — turn it on in Settings for much better accuracy on real Hindi conversations.)*
+*(The technical side — how the app talks to Anthropic's API, what it costs, and how failures are handled.)*
 
-## What changes when AI mode is on?
-
-Rules mode (the default) is like a very fast but limited assistant with a printed cheat-sheet of Hindi phrases. It's great at obvious cases but misses nuance.
-
-AI mode replaces the cheat-sheet with **Claude** — a large language model — that actually **reads and understands** the conversation like a person would. When AI mode is on:
-
-- Everything about listening (Step A → Step C in doc #2) stays the same.
-- But instead of running the "match keywords" logic, the chunk of text is sent to Claude, which returns structured data.
-
-That means:
-
-- ✅ It understands sarcasm, negation, and idioms.
-- ✅ It handles multiple products in one conversation.
-- ✅ It recognizes brand names and product varieties it has never seen before.
-- ✅ It figures out prices spoken in words (like "पैंतालीस").
-- ❌ It costs money (a very small amount — see below).
-- ❌ It requires internet.
-- ❌ It's slower by 1–2 seconds per chunk.
-
-For most shops, the AI mode is worth turning on for the accuracy alone. It's genuinely much better.
+Sunodukaan uses **Claude** (Anthropic's language model) as its only classifier. Doc #2 explained *what* Claude does for the app. This doc explains *how* the connection works.
 
 ---
 
-## How to enable it
+## Setup — enabling AI
 
-1. Get an API key from [https://console.anthropic.com](https://console.anthropic.com). This requires signing up (free) and adding at least $5 of credit.
+1. Get an API key from [https://console.anthropic.com](https://console.anthropic.com). This requires signing up (free) and adding a small amount of credit ($5 is plenty to start).
 2. In the app, go to **⚙️ Settings**.
 3. Paste the key into **Anthropic API Key**.
-4. Tick the **Use Claude AI for extraction** box.
-5. Tap **Test AI connection** to verify.
+4. Tap **Test AI connection** to verify. You should see ✅ Works.
 
-Your key is stored **only** in your browser's localStorage. It never touches any server other than Anthropic's own API. (You can verify this by reading the source code in `app.js` — search for `AI_ENDPOINT`.)
+Your key is stored **only** in your browser's localStorage. It never touches any server other than Anthropic's own API. You can verify this by reading `app.js` — search for `AI_ENDPOINT`.
+
+Until you add the key, the app records raw speech but does not extract insights. Once you add the key, any chunks already captured can be reprocessed with the **Process pending transcripts** button.
 
 ---
 
-## What actually happens under the hood
+## The API call, step by step
 
-When a chunk of speech is finalized, this code runs (`app.js`):
+When a chunk of speech is finalized (12 seconds of silence has passed), this code runs (`app.js`):
 
 ```javascript
 async function aiExtract(chunkText) {
@@ -65,57 +47,132 @@ async function aiExtract(chunkText) {
 In plain English:
 
 1. Open an internet request to Anthropic's servers.
-2. Include the API key (so Anthropic knows it's you).
-3. Tell it which Claude model to use — we use **Claude Haiku 4.5**, the fastest and cheapest one, which is good enough for this task.
-4. Include a **system prompt** telling Claude *how* to think about the task.
-5. Include the actual conversation snippet.
+2. Attach the API key (so Anthropic knows which account to bill).
+3. Choose the model — **Claude Haiku 4.5**, the fastest and cheapest, which is good enough for this task.
+4. Send the **system prompt** (permanent instructions — see [doc #2 Step D](02-how-understanding-works.md)).
+5. Send the **user message** — the conversation chunk to classify.
 6. Get back JSON with the extracted interactions.
 
----
-
-## The "system prompt" — how we instruct Claude
-
-The most important piece is the instruction we give Claude. It's stored in a constant called `AI_SYSTEM`:
-
-> You extract retail-shop customer interactions from short conversation snippets (typically Hindi, English, or Hinglish, spoken between a shopkeeper and a customer). Return valid JSON only. No preamble.
->
-> Schema: `{"interactions": [{"product": "<English name>", "outcome": "sold|lost_expensive_here|lost_cheaper_elsewhere|lost_other|oos|unclear", "price": <number or null>, "reason": "<short reason or null>", "snippet": "<verbatim short snippet>"}]}`
->
-> Outcome definitions:
-> - **sold**: customer decided to buy
-> - **lost_expensive_here**: customer said the shop's price is too high
-> - **lost_cheaper_elsewhere**: customer said they can get it cheaper elsewhere
-> - **lost_other**: customer decided not to buy for another reason
-> - **oos**: the shopkeeper said the item is not in stock / khatam / kal aayega — this means reorder
-> - **unclear**: mention of a product but no clear outcome
->
-> Only include interactions where a real product is mentioned. Ignore chitchat. If nothing found, return `{"interactions": []}`.
-
-This is a real, working prompt. It says three things clearly:
-
-1. **What Claude's job is** — extract shop interactions.
-2. **The exact JSON format** it must respond in.
-3. **The meaning of every outcome category** so it doesn't make up its own.
-
-Claude follows the schema and always returns machine-readable JSON. The app then parses that JSON and saves each interaction just like it would from rules mode.
+Total time: usually 1-2 seconds per chunk. During that time, the app keeps listening — the network call is asynchronous.
 
 ---
 
-## An example call
+## Which model and why
 
-Let's trace the same "sugar" conversation through AI mode:
+The exact model ID is `claude-haiku-4-5-20251001`. Haiku is Anthropic's fastest and cheapest tier. Why we chose it:
 
-**Input** sent to Claude:
+- ✅ **Fast** — 1-2 seconds per chunk, so the app feels live.
+- ✅ **Cheap** — roughly ₹0.03 per customer interaction (see cost math below).
+- ✅ **Good at Hindi and Hinglish** — its training covers Indian languages well.
+- ✅ **Good at JSON output** — the model reliably follows the structured schema, which is critical because the app needs machine-readable answers.
+
+Bigger models (Sonnet, Opus) would be marginally more accurate but 5-10× more expensive. For classifying shop interactions, Haiku is the sweet spot.
+
+---
+
+## How much does it cost?
+
+At the time of writing, Claude Haiku 4.5 is priced roughly at:
+
+- **$1 per million input tokens**
+- **$5 per million output tokens**
+
+A **token** is roughly ¾ of a word. Every request has both input (the system prompt + the chunk) and output (Claude's JSON reply).
+
+Sunodukaan's typical numbers per customer interaction:
+
+| Piece | Tokens |
+|---|---|
+| System prompt (fixed, shared) | ~800 |
+| Chunk text | ~40 |
+| Total input | **~840** |
+| Claude's JSON reply | ~80 |
+| Total output | **~80** |
+
+Cost per interaction:
+
+- Input: `840 tokens × $1 / 1,000,000` = **$0.00084**
+- Output: `80 tokens × $5 / 1,000,000` = **$0.00040**
+- **Total ≈ $0.0012 per interaction** ≈ **₹0.10 per interaction** at ₹85/USD
+
+For a shop with 200 interactions per day:
+
+- Per day: 200 × ₹0.10 = **₹20**
+- Per month: ≈ **₹600**
+
+For a smaller shop (50 interactions per day): about **₹150 / month**.
+
+If you find this too expensive, Anthropic also offers **prompt caching**, which would drop the cost by ~80% because the same big system prompt is sent on every request. That's an easy optimization to add later; ping if you want it done.
+
+Anthropic bills your account monthly against credit you added at signup. If your credit runs out, requests will fail — but the app queues them and you can top up and reprocess.
+
+---
+
+## Handling failure — the pending queue
+
+The internet is unreliable and APIs can throttle. Sunodukaan handles this by never dropping a chunk:
+
+```javascript
+try {
+  items = await aiExtract(text);
+  // Save each interaction
+} catch (e) {
+  state.pending.push({ id: uid(), ts, text });   // queue for later
+  save();
+}
+```
+
+Any of these situations lands the chunk in the pending queue:
+
+- Your API key is wrong or expired
+- Your Anthropic credit ran out
+- Your internet dropped mid-request
+- Anthropic's service is temporarily unavailable
+- You started using the app before setting a key
+
+The banner at the top of the app shows how many chunks are pending. Clicking **Process now** (or the button in Settings) sends the whole queue through Claude one by one, and each successful call becomes an interaction record.
+
+You never lose spoken data.
+
+---
+
+## Why the "anthropic-dangerous-direct-browser-access" header?
+
+You'll notice this header:
+
+```javascript
+'anthropic-dangerous-direct-browser-access': 'true'
+```
+
+This is Anthropic saying: *"Normally, we don't want people calling this API from a browser because their API key would be exposed to anyone using their site. If you know what you're doing and you own the key, opt in with this flag."*
+
+For Sunodukaan, this is fine because:
+
+- **You are the only user of your instance** — you paste your own key on your own device.
+- Your key never leaves your browser's storage.
+- If someone else opens the same GitHub Pages URL, they'd have to paste *their own* key.
+
+If you were building a product with hundreds of users, you'd put a small server in the middle that holds one shared key. For a single-shopkeeper personal tool, direct-from-browser is fine.
+
+---
+
+## What Claude sees vs. what it sends back
+
+**Sent to Claude (input):**
 
 ```
-Conversation:
-"""
-Bhaiya, sugar hai kya? Haan, 45 rupaye kilo. Arey bahot mahenga hai, chodo.
-"""
-Extract interactions as JSON.
+System prompt:
+  [~800 tokens of instructions about the task, schema, examples]
+
+User message:
+  Conversation:
+  """
+  Bhaiya, sugar hai kya? Haan, 45 rupaye kilo. Arey bahot mahenga hai, chodo.
+  """
+  Extract interactions as JSON.
 ```
 
-**Response** from Claude (roughly):
+**Received from Claude (output):**
 
 ```json
 {
@@ -131,85 +188,22 @@ Extract interactions as JSON.
 }
 ```
 
-Same final answer as rules mode — but Claude got there by *understanding* the conversation, not by matching keywords. On a harder conversation like:
-
-> "Bhaiya, Amul milk 500ml aur Parle-G ka bada packet, aur agar Dettol soap fresh stock aaya hai to woh bhi. Milk aur biscuit ke total 65 mein de do, soap mahenga hai chodo."
-
-Rules mode would grab just one product. Claude will return three separate interactions:
-
-```json
-{
-  "interactions": [
-    {"product": "Milk", "outcome": "sold", "price": null, "reason": null, "snippet": "..."},
-    {"product": "Biscuits", "outcome": "sold", "price": null, "reason": null, "snippet": "..."},
-    {"product": "Soap", "outcome": "lost_expensive_here", "price": null, "reason": "Customer said soap is too expensive", "snippet": "..."}
-  ]
-}
-```
-
-That's the real value of AI mode.
+The app extracts the JSON block from Claude's response (`text.match(/\{[\s\S]*\}/)`), parses it, and saves each interaction. That's the entire cycle.
 
 ---
 
-## How much does it cost?
+## Privacy: what data leaves your device?
 
-We use Claude Haiku 4.5, priced (at time of writing) at roughly:
+When AI extraction runs, these two things go to Anthropic:
 
-- **$1 per million input tokens** (roughly 750,000 words)
-- **$5 per million output tokens**
+- Your API key (as an HTTP header, encrypted over HTTPS)
+- The chunk of conversation text (as the user message)
 
-A single chunk is typically 40 input tokens + 60 output tokens = 100 tokens total. So one interaction costs about **$0.0004** — that is *four hundredths of a paisa* in Indian rupee terms.
+That's it. The audio does not go to Anthropic — the audio was already turned into text by your browser's speech engine before the app ever saw it.
 
-At 200 interactions per day, that's about **8 cents (₹7) per month**. Even at 1000 interactions per day, roughly **₹35 per month**.
+According to Anthropic's [data usage policy](https://www.anthropic.com/legal/commercial-terms), API traffic is not used to train their models by default. Data may be retained for a limited window for safety review.
 
-Anthropic bills you monthly against the credit you added at signup.
-
----
-
-## The safety net: AI mode falls back to rules mode
-
-If the AI request fails for any reason (bad internet, invalid API key, Claude is temporarily overloaded), the app doesn't lose the data. This is what happens:
-
-```javascript
-try {
-  items = await aiExtract(joined);
-} catch (e) {
-  console.error('AI extraction failed, falling back to rules', e);
-  toast('AI extraction failed — using keyword mode');
-  const r = ruleExtract(chunk);
-  if (r) items = [r];
-}
-```
-
-Translation: "Try Claude. If it fails, run the keyword rules instead. Never drop the chunk on the floor."
-
-You'll see a small toast message when this happens so you know something went wrong. Your data continues being captured either way.
-
----
-
-## Why Anthropic's dangerous-direct-browser-access header?
-
-You'll notice this header in the code:
-
-```javascript
-'anthropic-dangerous-direct-browser-access': 'true'
-```
-
-This is Anthropic saying: *"Normally, we don't want people calling this API directly from a browser because their API key would be exposed to anyone using their site. If you really know what you're doing and you're OK with that, opt in with this flag."*
-
-For Sunodukaan, this is fine because:
-
-- **You are the only user** of your instance — you paste your own key, on your own device.
-- Your key never leaves your browser's storage.
-- If someone else visited the site, they'd have to paste their own key.
-
-If you were building a product with hundreds of users, you would put a small server in the middle that holds one shared key. For a single-shopkeeper personal tool, the direct approach is fine.
-
----
-
-## Turning AI off
-
-Any time, un-tick **Use Claude AI for extraction** in Settings. The app immediately switches back to rules mode. Your existing data is untouched.
+If that trade-off is unacceptable — for example, if your shop's conversations are sensitive — you would need to run a local model (like Ollama with Llama or Qwen) instead. That's more complex and outside the scope of a browser-only app.
 
 ---
 

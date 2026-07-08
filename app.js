@@ -8,11 +8,11 @@
     settings: {
       lang: 'hi-IN',
       autoRestart: true,
-      aiEnabled: false,
       apiKey: '',
     },
     interactions: [],   // {id, ts, product, outcome, price, reason, snippet, notes, source}
     transcript: [],     // {id, ts, text}
+    pending: [],        // {id, ts, text} — chunks waiting for AI processing
   };
   let state = load();
 
@@ -41,176 +41,48 @@
   const timeFmt = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const dateFmt = ts => new Date(ts).toLocaleDateString();
 
-  // ----------- Product database (Hindi / Hinglish / English) ------------
-  // Each entry: {en: english name, keys: [regex or lowercase words that indicate this product]}
-  const PRODUCTS = [
-    { en: 'Sugar',       keys: ['sugar', 'chini', 'cheeni', 'chinee', 'shakar', 'shakkar', 'चीनी', 'शक्कर'] },
-    { en: 'Salt',        keys: ['salt', 'namak', 'नमक', 'tata salt'] },
-    { en: 'Rice',        keys: ['rice', 'chawal', 'chaval', 'चावल', 'basmati'] },
-    { en: 'Wheat Flour', keys: ['atta', 'aata', 'flour', 'gehu', 'gehun', 'आटा', 'गेहूँ', 'ashirwad', 'ashirvad', 'aashirvaad'] },
-    { en: 'Maida',       keys: ['maida', 'मैदा'] },
-    { en: 'Besan',       keys: ['besan', 'बेसन', 'gram flour'] },
-    { en: 'Sooji',       keys: ['sooji', 'suji', 'rava', 'सूजी', 'रवा'] },
-    { en: 'Dal / Lentils', keys: ['dal', 'daal', 'lentil', 'moong', 'toor', 'tur', 'arhar', 'urad', 'chana', 'masoor', 'दाल', 'मूंग', 'तूर', 'अरहर', 'उड़द', 'चना', 'मसूर'] },
-    { en: 'Cooking Oil', keys: ['oil', 'tel', 'sarso', 'sarson', 'mustard oil', 'refined', 'sunflower', 'तेल', 'सरसों', 'fortune', 'saffola', 'dhara'] },
-    { en: 'Ghee',        keys: ['ghee', 'देसी घी', 'घी', 'amul ghee'] },
-    { en: 'Tea',         keys: ['tea', 'chai', 'चाय', 'tata tea', 'brooke bond', 'red label', 'taj mahal', 'lipton'] },
-    { en: 'Coffee',      keys: ['coffee', 'kaafi', 'nescafe', 'bru', 'कॉफी'] },
-    { en: 'Milk',        keys: ['milk', 'doodh', 'dudh', 'दूध', 'amul milk', 'mother dairy'] },
-    { en: 'Curd / Dahi', keys: ['curd', 'dahi', 'yogurt', 'दही'] },
-    { en: 'Paneer',      keys: ['paneer', 'पनीर', 'cottage cheese'] },
-    { en: 'Butter',      keys: ['butter', 'makhan', 'मक्खन', 'amul butter'] },
-    { en: 'Cheese',      keys: ['cheese', 'चीज़', 'amul cheese', 'britannia cheese'] },
-    { en: 'Bread',       keys: ['bread', 'ब्रेड', 'pav', 'पाव', 'britannia bread'] },
-    { en: 'Eggs',        keys: ['egg', 'eggs', 'anda', 'ande', 'अंडा', 'अंडे'] },
-
-    { en: 'Biscuits',    keys: ['biscuit', 'biscuits', 'बिस्किट', 'parle g', 'parle-g', 'marie', 'good day', 'bourbon', 'hide and seek', 'oreo', 'britannia', 'monaco', 'krackjack'] },
-    { en: 'Chips',       keys: ['chips', 'चिप्स', 'lays', 'kurkure', 'balaji', 'uncle chipps', 'wafer', 'wafers'] },
-    { en: 'Namkeen',     keys: ['namkeen', 'नमकीन', 'haldiram', 'bhujia', 'भुजिया', 'sev', 'chivda'] },
-    { en: 'Chocolate',   keys: ['chocolate', 'चॉकलेट', 'dairy milk', 'kitkat', 'perk', 'munch', 'five star', '5star', 'gems'] },
-    { en: 'Maggi',       keys: ['maggi', 'मैगी', 'noodles', 'yipee', 'top ramen'] },
-
-    { en: 'Coca-Cola',   keys: ['coke', 'coca cola', 'coca-cola', 'कोक'] },
-    { en: 'Pepsi',       keys: ['pepsi', 'पेप्सी'] },
-    { en: 'Thums Up',    keys: ['thums up', 'thumbs up', 'थम्स अप'] },
-    { en: 'Limca',       keys: ['limca', 'लिम्का'] },
-    { en: 'Sprite',      keys: ['sprite', 'स्प्राइट'] },
-    { en: 'Frooti / Maaza', keys: ['frooti', 'फ्रूटी', 'maaza', 'maza', 'मज़ा', 'slice', 'appy'] },
-    { en: 'Water Bottle',keys: ['water', 'paani', 'पानी', 'bisleri', 'bislery', 'kinley', 'aquafina', 'bottle', 'बोतल'] },
-    { en: 'Juice',       keys: ['juice', 'jusi', 'रस', 'real', 'tropicana', 'paperboat', 'paper boat'] },
-    { en: 'Milk Powder / Bournvita', keys: ['bournvita', 'bourn vita', 'boost', 'horlicks', 'complan'] },
-
-    { en: 'Soap',        keys: ['soap', 'saabun', 'sabun', 'साबुन', 'lifebuoy', 'dettol', 'lux', 'santoor', 'cinthol', 'medimix', 'godrej no 1', 'pears', 'dove'] },
-    { en: 'Shampoo',     keys: ['shampoo', 'शैंपू', 'clinic plus', 'clinic+', 'sunsilk', 'head and shoulders', 'pantene', 'dove shampoo', 'chik'] },
-    { en: 'Toothpaste',  keys: ['toothpaste', 'manjan', 'दंत मंजन', 'colgate', 'pepsodent', 'closeup', 'close up', 'sensodyne', 'dabur red', 'patanjali dant'] },
-    { en: 'Toothbrush',  keys: ['toothbrush', 'brush', 'ब्रश', 'colgate brush', 'oral b'] },
-    { en: 'Hair Oil',    keys: ['hair oil', 'parachute', 'dabur amla', 'navratna', 'kesh', 'coconut oil'] },
-    { en: 'Face Cream',  keys: ['cream', 'क्रीम', 'fair and lovely', 'glow and lovely', 'ponds', 'nivea', 'boroplus', 'boro plus', 'vaseline'] },
-    { en: 'Talcum Powder', keys: ['powder', 'पाउडर', 'ponds powder', 'yardley', 'nycil'] },
-    { en: 'Sanitary Pads', keys: ['pad', 'pads', 'sanitary', 'whisper', 'stayfree', 'sofy'] },
-    { en: 'Diapers',     keys: ['diaper', 'pampers', 'huggies', 'mamypoko', 'mamy poko'] },
-
-    { en: 'Detergent',   keys: ['detergent', 'washing powder', 'surf', 'ariel', 'tide', 'rin', 'wheel', 'nirma', 'ghadi', 'ezee'] },
-    { en: 'Dishwash',    keys: ['dishwash', 'vim', 'pril', 'exo', 'dish', 'bartan', 'बर्तन'] },
-    { en: 'Floor Cleaner', keys: ['harpic', 'lizol', 'phenyl', 'floor cleaner', 'फिनाइल'] },
-    { en: 'Agarbatti',   keys: ['agarbatti', 'incense', 'अगरबत्ती', 'cycle brand', 'zed black'] },
-    { en: 'Matchbox',    keys: ['matchbox', 'match', 'माचिस', 'machis'] },
-    { en: 'Candle',      keys: ['candle', 'मोमबत्ती', 'mombatti'] },
-    { en: 'Battery',     keys: ['battery', 'cell', 'सेल', 'eveready', 'duracell'] },
-    { en: 'Mosquito Repellent', keys: ['mortein', 'all out', 'good knight', 'goodknight', 'hit', 'mosquito', 'मच्छर'] },
-
-    { en: 'Cigarette',   keys: ['cigarette', 'sigret', 'सिगरेट', 'gold flake', 'wills', 'classic', 'marlboro', 'goldflake'] },
-    { en: 'Bidi',        keys: ['bidi', 'beedi', 'बीड़ी'] },
-    { en: 'Pan Masala',  keys: ['pan masala', 'paan masala', 'rajnigandha', 'vimal', 'tulsi', 'kamla pasand'] },
-    { en: 'Gutkha',      keys: ['gutkha', 'gutka', 'गुटखा'] },
-
-    { en: 'Onion',       keys: ['onion', 'pyaz', 'pyaaz', 'प्याज'] },
-    { en: 'Potato',      keys: ['potato', 'aloo', 'आलू'] },
-    { en: 'Tomato',      keys: ['tomato', 'tamatar', 'टमाटर'] },
-    { en: 'Ginger',      keys: ['ginger', 'adrak', 'अदरक'] },
-    { en: 'Garlic',      keys: ['garlic', 'lehsun', 'lasun', 'लहसुन'] },
-    { en: 'Green Chilli',keys: ['chilli', 'chilly', 'mirchi', 'हरी मिर्च'] },
-    { en: 'Lemon',       keys: ['lemon', 'nimbu', 'नींबू'] },
-    { en: 'Coriander',   keys: ['coriander', 'dhaniya', 'धनिया'] },
-    { en: 'Curry Leaf',  keys: ['curry leaf', 'kadi patta', 'karipatta', 'करी पत्ता'] },
-  ];
-
-  // Precompile lowercase words + Devanagari alt for quick lookup
-  const PRODUCT_INDEX = PRODUCTS.map(p => ({ en: p.en, keys: p.keys.map(k => k.toLowerCase()) }));
-
-  // ----------- Extraction rules ------------
-  const AVAIL_YES = ['है', 'हैं', 'मिल जाएगा', 'मिल जायेगा', 'available', 'haan hai', 'ha hai', 'yes hai', 'ji hai', 'yes', 'haan', 'ji', 'ha ha', 'stock hai', 'hai bhaiya', 'le lo', 'रखा है'];
-  const AVAIL_NO  = ['नहीं है', 'nahi hai', 'nahi hain', 'नही है', 'khatam', 'खतम', 'out of stock', 'stock nahi', 'stock khatam', 'not available', 'kal aayega', 'kal aaega', 'kal milega', 'kal aa jayega', 'abhi nahi', 'abhi khatam', 'finish', 'khatm ho gaya', 'नहीं मिलेगा'];
-  const REJ_EXPENSIVE_HERE = ['mahenga', 'mehnga', 'mahnga', 'mahanga', 'महँगा', 'महंगा', 'expensive', 'costly', 'bahot mahenga', 'bahut mahenga', 'jyada hai', 'zyada hai', 'ज़्यादा है', 'ज्यादा है', 'kam kar do', 'discount', 'kam karo', 'kam kariye', 'reduce', 'high price', 'itna nahi'];
-  const REJ_CHEAPER_ELSEWHERE = ['sasta milta', 'sasta mil raha', 'wahan sasta', 'usse sasta', 'aur sasta', 'सस्ता मिलता', 'सस्ता मिल', 'dukan pe sasta', 'dukaan pe sasta', 'anywhere else', 'cheaper elsewhere', 'aur jagah', 'dusri jagah', 'दूसरी जगह', 'other shop', 'kirana', 'wholesale', 'दुकान पर सस्ता'];
-  const BUY_YES = ['de do', 'de dijiye', 'de dena', 'pack karo', 'pack kar do', 'दे दो', 'दे दीजिये', 'de do bhaiya', 'pack kar do', 'le lunga', 'lunga', 'लूँगा', 'ले लूँगा', 'ok de do', 'theek hai', 'thik hai', 'ठीक है', 'okay', 'chalo', 'चलो', 'pack it', 'ha de do'];
-  const BUY_NO  = ['nahi lena', 'nahi chahiye', 'नहीं चाहिए', 'chodo', 'chhodo', 'छोडो', 'rehne do', 'rahne do', 'रहने दो', 'नहीं', 'nahi bhaiya', 'kal aaunga', 'kal ke liye', 'baad me', 'baad mein', 'बाद में', 'skip', 'not now'];
-  const ASK_MARKERS = ['hai kya', 'है क्या', 'kya hai', 'क्या है', 'do you have', 'milega', 'मिलेगा', 'milegi', 'मिलेगी', 'chahiye', 'चाहिए', 'de do', 'de dena', 'दे दो', 'dena', 'kitna', 'कितना', 'kitne ka'];
-
-  const PRICE_RE = /(?:₹|rs\.?|rupees?|rupaye|rupay|रुपये|रुपए|रुपैया|रु\.?)\s*(\d{1,5}(?:\.\d{1,2})?)|(\d{1,5})\s*(?:rs\.?|rupees?|rupaye|रुपये|रुपैया)/i;
-  const PLAIN_PRICE_RE = /\b(\d{1,4})\s*(?:ka|ke|का|के)?\b/i;
-
-  function detectProduct(text) {
-    if (!text) return null;
-    const lower = text.toLowerCase();
-    let bestMatch = null;
-    let bestLen = 0;
-    for (const p of PRODUCT_INDEX) {
-      for (const k of p.keys) {
-        if (lower.includes(k) && k.length > bestLen) {
-          bestMatch = p.en; bestLen = k.length;
-        }
-      }
-    }
-    return bestMatch;
-  }
-
-  function containsAny(text, arr) {
-    const lower = text.toLowerCase();
-    return arr.some(k => lower.includes(k.toLowerCase()));
-  }
-
-  function extractPrice(text) {
-    const m = text.match(PRICE_RE);
-    if (m) return Number(m[1] || m[2]);
-    return null;
-  }
-
-  // Rule-based interaction extraction from a chunk of utterances
-  function ruleExtract(chunk) {
-    const joined = chunk.map(u => u.text).join(' ');
-    const product = detectProduct(joined);
-    if (!product) return null;
-
-    let outcome = 'unclear';
-    let reason = null;
-    let price = extractPrice(joined);
-
-    const availableSaid = containsAny(joined, AVAIL_NO) ? false : (containsAny(joined, AVAIL_YES) ? true : null);
-    const bought = containsAny(joined, BUY_NO) ? false : (containsAny(joined, BUY_YES) ? true : null);
-    const expensiveHere = containsAny(joined, REJ_EXPENSIVE_HERE);
-    const cheaperElsewhere = containsAny(joined, REJ_CHEAPER_ELSEWHERE);
-
-    if (availableSaid === false) {
-      outcome = 'oos';
-      reason = 'Not in stock';
-    } else if (bought === true) {
-      outcome = 'sold';
-    } else if (cheaperElsewhere) {
-      outcome = 'lost_cheaper_elsewhere';
-      reason = 'Cheaper elsewhere';
-    } else if (expensiveHere) {
-      outcome = 'lost_expensive_here';
-      reason = 'My price too high';
-    } else if (bought === false) {
-      outcome = 'lost_other';
-      reason = 'Customer decided not to buy';
-    } else {
-      outcome = 'unclear';
-    }
-
-    return {
-      product,
-      outcome,
-      price,
-      reason,
-      snippet: joined.trim().slice(0, 240),
-    };
-  }
-
-  // ----------- AI (Anthropic) extraction ------------
+  // ----------- AI (Anthropic) extraction — the only classifier ------------
   const AI_ENDPOINT = 'https://api.anthropic.com/v1/messages';
   const AI_MODEL = 'claude-haiku-4-5-20251001';
-  const AI_SYSTEM = `You extract retail-shop customer interactions from short conversation snippets (typically Hindi, English, or Hinglish, spoken between a shopkeeper and a customer). Return valid JSON only. No preamble.
-Schema: {"interactions":[{"product":"<English name>","outcome":"sold|lost_expensive_here|lost_cheaper_elsewhere|lost_other|oos|unclear","price":<number or null>,"reason":"<short reason or null>","snippet":"<verbatim short snippet>"}]}
-Outcome definitions:
-- sold: customer decided to buy
-- lost_expensive_here: customer said the shop's price is too high
-- lost_cheaper_elsewhere: customer said they can get it cheaper elsewhere
-- lost_other: customer decided not to buy for another reason (not needed now, will come later, etc.)
-- oos: the shopkeeper said the item is not in stock / khatam / kal aayega — this means reorder
-- unclear: mention of a product but no clear outcome
-Only include interactions where a real product is mentioned. Ignore chitchat. If nothing found, return {"interactions":[]}.`;
+  const AI_SYSTEM = `You extract structured retail-shop customer interactions from short conversation snippets between a shopkeeper (kirana / grocery / FMCG store owner in India) and their customers. The speech will be in Hindi, English, Hinglish (mixed), or another Indian language. The transcript is imperfect — expect misspellings, spoken numerals, brand names, and casual grammar.
+
+RETURN VALID JSON ONLY. No preamble, no code fences, no explanation.
+
+Schema:
+{
+  "interactions": [
+    {
+      "product": "<English product name — normalize brand+category, e.g. 'Dettol Soap', 'Amul Milk', 'Sugar', 'Parle-G Biscuits'>",
+      "outcome": "sold" | "lost_expensive_here" | "lost_cheaper_elsewhere" | "lost_other" | "oos" | "unclear",
+      "price": <number in INR or null>,
+      "reason": "<short human-readable reason or null>",
+      "snippet": "<the verbatim spoken text that supports this interaction, ≤200 chars>"
+    }
+  ]
+}
+
+Outcome definitions (very important — classify carefully):
+- sold: the customer clearly decided to buy (phrases like "de do", "pack karo", "theek hai", "le lunga", "chalo", "ok").
+- lost_expensive_here: customer refused because THIS SHOP'S price is too high ("mahenga hai", "zyada hai", "itna nahi", "kam karo", "discount do").
+- lost_cheaper_elsewhere: customer said they can get it cheaper somewhere else ("wahan sasta milta hai", "dusri dukan pe sasta", "aur jagah kam mein").
+- lost_other: customer did not buy for some other reason (not needed now, will come back later, just asking, changed mind) — NOT because of price and NOT because you were out of stock.
+- oos: the SHOPKEEPER said the item is not in stock, will come tomorrow, is finished, etc. ("nahi hai", "khatam ho gaya", "kal aayega", "stock nahi"). This means reorder.
+- unclear: a product was clearly mentioned but the outcome cannot be determined from the snippet.
+
+Rules for extraction:
+1. Only extract interactions where a REAL product is discussed. Ignore pure chit-chat, greetings, weather talk.
+2. If several products are discussed in the same snippet, return one interaction per product.
+3. Normalize product names to their standard English name. If a brand is spoken, keep it in the name ("Dettol Soap", not just "Soap").
+4. Prices: capture the number the shopkeeper quoted or the number the customer heard. If spoken in words (e.g., "पैंतालीस"), convert to digits. If no price is mentioned, use null.
+5. If the classification would be lost_expensive_here vs lost_cheaper_elsewhere and both signals appear, prefer lost_cheaper_elsewhere (it's the more specific reason).
+6. Do not invent outcomes. If truly ambiguous, use "unclear".
+7. If nothing product-related is found, return {"interactions": []}.
+
+Examples:
+- "sugar hai kya? haan 45 rupaye. mahenga hai chodo" → {"interactions":[{"product":"Sugar","outcome":"lost_expensive_here","price":45,"reason":"Customer said price too high","snippet":"sugar hai kya? haan 45 rupaye. mahenga hai chodo"}]}
+- "dettol soap chahiye" / "nahi hai kal aayega" → {"interactions":[{"product":"Dettol Soap","outcome":"oos","price":null,"reason":"Not in stock — kal aayega","snippet":"dettol soap chahiye ... nahi hai kal aayega"}]}
+- "parle-g bada packet dena 20 ka. haan pack karo" → {"interactions":[{"product":"Parle-G Biscuits","outcome":"sold","price":20,"reason":null,"snippet":"parle-g bada packet dena 20 ka. haan pack karo"}]}
+- "amul milk aur bread, milk 30 aur bread 40. bread aur jagah 30 mein milta hai, sirf milk de do" → {"interactions":[{"product":"Amul Milk","outcome":"sold","price":30,"reason":null,"snippet":"..."},{"product":"Bread","outcome":"lost_cheaper_elsewhere","price":40,"reason":"Customer said it's cheaper at another shop","snippet":"..."}]}`;
 
   async function aiExtract(chunkText) {
     const key = state.settings.apiKey?.trim();
@@ -277,37 +149,71 @@ Only include interactions where a real product is mentioned. Ignore chitchat. If
     const joined = chunk.map(u => u.text).join(' ').trim();
     if (joined.length < MIN_CHUNK_CHARS) return;
 
-    let items = [];
-    if (state.settings.aiEnabled && state.settings.apiKey) {
-      try {
-        items = await aiExtract(joined);
-      } catch (e) {
-        console.error('AI extraction failed, falling back to rules', e);
-        toast('AI extraction failed — using keyword mode');
-        const r = ruleExtract(chunk);
-        if (r) items = [r];
-      }
-    } else {
-      const r = ruleExtract(chunk);
-      if (r) items = [r];
+    if (!state.settings.apiKey) {
+      // No key set — save the chunk to the pending queue so nothing is lost.
+      state.pending.push({ id: uid(), ts: chunk[0].ts, text: joined });
+      save();
+      renderAll();
+      showKeyMissingBanner();
+      return;
     }
 
+    await extractAndStore(chunk[0].ts, joined);
+  }
+
+  async function extractAndStore(ts, text) {
+    let items = [];
+    try {
+      items = await aiExtract(text);
+    } catch (e) {
+      console.error('AI extraction failed', e);
+      toast('AI extraction failed: ' + e.message.slice(0, 80));
+      // Queue for retry
+      state.pending.push({ id: uid(), ts, text });
+      save();
+      renderAll();
+      return;
+    }
     for (const it of items) {
       if (!it || !it.product) continue;
       state.interactions.push({
         id: uid(),
-        ts: chunk[0].ts,
+        ts,
         product: it.product,
         outcome: it.outcome || 'unclear',
-        price: it.price ?? null,
+        price: (it.price ?? null),
         reason: it.reason || null,
-        snippet: it.snippet || joined.slice(0, 240),
+        snippet: it.snippet || text.slice(0, 240),
         notes: '',
-        source: state.settings.aiEnabled ? 'ai' : 'rules',
+        source: 'ai',
       });
     }
     save();
     renderAll();
+  }
+
+  async function processPending() {
+    if (!state.settings.apiKey) {
+      toast('Add your Anthropic API key first (⚙️ Settings)');
+      return;
+    }
+    if (state.pending.length === 0) {
+      toast('Nothing pending to process');
+      return;
+    }
+    const btn = document.getElementById('btn-process-pending');
+    if (btn) { btn.disabled = true; btn.textContent = 'Processing…'; }
+    const queue = state.pending.slice();
+    state.pending = [];
+    save();
+    let done = 0, total = queue.length;
+    for (const chunk of queue) {
+      if (btn) btn.textContent = `Processing ${++done}/${total}…`;
+      await extractAndStore(chunk.ts, chunk.text);
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Process pending transcripts'; }
+    toast(`Processed ${total} pending chunk${total === 1 ? '' : 's'}`);
+    updateKeyMissingBanner();
   }
 
   // ----------- Speech recognition ------------
@@ -711,11 +617,16 @@ Only include interactions where a real product is mentioned. Ignore chitchat. If
     const ar = $('#setting-auto-restart'); ar.checked = state.settings.autoRestart;
     ar.addEventListener('change', () => { state.settings.autoRestart = ar.checked; save(); });
 
-    const ai = $('#setting-ai-enabled'); ai.checked = state.settings.aiEnabled;
-    ai.addEventListener('change', () => { state.settings.aiEnabled = ai.checked; save(); });
-
     const k = $('#setting-api-key'); k.value = state.settings.apiKey || '';
-    k.addEventListener('change', () => { state.settings.apiKey = k.value.trim(); save(); });
+    k.addEventListener('change', () => {
+      const wasEmpty = !state.settings.apiKey;
+      state.settings.apiKey = k.value.trim();
+      save();
+      updateKeyMissingBanner();
+      if (wasEmpty && state.settings.apiKey && state.pending.length > 0) {
+        toast(`Key saved · ${state.pending.length} pending chunk(s) waiting`);
+      }
+    });
 
     $('#btn-test-ai').addEventListener('click', async () => {
       const out = $('#ai-test-result'); out.textContent = 'Testing…';
@@ -750,6 +661,39 @@ Only include interactions where a real product is mentioned. Ignore chitchat. If
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.remove('show'), 2400);
   }
+
+  function updateKeyMissingBanner() {
+    const banner = document.getElementById('key-banner');
+    const pendingCount = state.pending.length;
+    const hasKey = !!state.settings.apiKey;
+    const btn = document.getElementById('btn-process-pending');
+    if (!hasKey) {
+      banner.hidden = false;
+      banner.innerHTML = `
+        <div>
+          <strong>⚠️ AI extraction is disabled — add your Anthropic API key to start turning conversations into insights.</strong>
+          ${pendingCount > 0 ? `<div class="banner-sub">${pendingCount} conversation chunk${pendingCount === 1 ? '' : 's'} captured and waiting to be processed.</div>` : ''}
+        </div>
+        <button class="btn-primary" id="banner-goto-settings">Open Settings</button>`;
+      document.getElementById('banner-goto-settings').addEventListener('click', () => switchTab('settings'));
+      if (btn) btn.hidden = pendingCount === 0;
+    } else if (pendingCount > 0) {
+      banner.hidden = false;
+      banner.innerHTML = `
+        <div>
+          <strong>${pendingCount} chunk${pendingCount === 1 ? '' : 's'} queued for AI processing.</strong>
+          <div class="banner-sub">These are conversations that couldn't be processed (usually because the API was down or the key was missing).</div>
+        </div>
+        <button class="btn-primary" id="banner-process">Process now</button>`;
+      document.getElementById('banner-process').addEventListener('click', processPending);
+      if (btn) btn.hidden = false;
+    } else {
+      banner.hidden = true;
+      if (btn) btn.hidden = true;
+    }
+  }
+
+  function showKeyMissingBanner() { updateKeyMissingBanner(); }
 
   // ----------- Boot ------------
   function boot() {
@@ -793,6 +737,10 @@ Only include interactions where a real product is mentioned. Ignore chitchat. If
 
     bindSettings();
     renderAll();
+    updateKeyMissingBanner();
+
+    const bp = document.getElementById('btn-process-pending');
+    if (bp) bp.addEventListener('click', processPending);
 
     if (!SR) {
       document.getElementById('listen-status').innerHTML = '⚠️ Speech recognition not supported in this browser. Please open in <strong>Chrome</strong>, <strong>Edge</strong>, or <strong>Safari</strong>. On mobile, Chrome for Android works best.';

@@ -26,7 +26,6 @@ For Sunodukaan, everything is stored under one key: `sunodukaan.v1`. The value i
   "settings": {
     "lang": "hi-IN",
     "autoRestart": true,
-    "aiEnabled": false,
     "apiKey": ""
   },
   "interactions": [
@@ -36,27 +35,31 @@ For Sunodukaan, everything is stored under one key: `sunodukaan.v1`. The value i
       "product": "Sugar",
       "outcome": "lost_expensive_here",
       "price": 45,
-      "reason": "My price too high",
+      "reason": "Customer said price is too high",
       "snippet": "sugar hai kya? ... mahenga hai chodo",
       "notes": "",
-      "source": "rules"
+      "source": "ai"
     },
     { /* ... more interactions ... */ }
   ],
   "transcript": [
     { "id": "u1", "ts": "2026-07-08T10:32:12.100Z", "text": "sugar hai kya" },
     { /* ... more utterances ... */ }
+  ],
+  "pending": [
+    { "id": "p1", "ts": "2026-07-08T10:33:00.000Z", "text": "..." }
   ]
 }
 ```
 
-There are **three** top-level sections:
+There are **four** top-level sections:
 
 | Section | What's in it |
 |---|---|
-| `settings` | Your preferences — language, whether AI is on, your API key |
-| `interactions` | Every extracted business record — this is what powers your dashboards |
+| `settings` | Your preferences — language, auto-restart, your Anthropic API key |
+| `interactions` | Every classified business record — this is what powers your dashboards |
 | `transcript` | The raw text of what was said — for reviewing / debugging |
+| `pending` | Conversation chunks the AI couldn't classify yet (no key, network error, etc.) — waiting to be re-processed |
 
 ---
 

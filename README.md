@@ -55,14 +55,16 @@ https://milan905000.github.io/sunodukaan/
 - If a customer interaction is missed, click **+ Add manually** and log it in a few seconds.
 - Any interaction can be clicked to correct the product / outcome / price.
 
-### Optional: Turn on AI mode for much better accuracy
+### Required: Add your Anthropic API key
 
-By default the app uses smart keyword rules (works OK). If you have an Anthropic API key you can enable **Claude AI extraction** in Settings — this understands Hindi conversations much better and captures details the rules miss.
+Sunodukaan uses **Claude** to read your shop's conversations and classify each customer interaction. Without an API key, the app still records raw speech but cannot produce insights.
 
-- Get a key at [console.anthropic.com](https://console.anthropic.com)
-- Paste it into **Settings → Anthropic API Key**
-- Tick **Use Claude AI for extraction**
-- Your key is stored only in your browser and only sent to Anthropic — nowhere else.
+1. Get a key at [console.anthropic.com](https://console.anthropic.com) — sign-up is free, add a small amount of credit ($5 is plenty to start).
+2. Paste it into **⚙️ Settings → Anthropic API Key**.
+3. Tap **Test AI connection** — you should see ✅.
+4. If you already used the app before adding the key, tap **Process pending transcripts** to classify everything captured so far.
+
+Your key is stored only in your browser and only sent to Anthropic — nowhere else. Cost is roughly ₹0.10 per customer interaction; typical shops spend ₹150-600/month. See [docs/03-how-ai-mode-works.md](docs/03-how-ai-mode-works.md) for the full cost math.
 
 ---
 

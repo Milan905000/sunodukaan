@@ -167,7 +167,7 @@ The CSV has these columns:
 ts, date, time, product, outcome, price, reason, notes, snippet, source
 ```
 
-The `source` column tells you whether the record came from `rules`, `ai`, or `manual` — useful to know how reliable each row is.
+The `source` column tells you whether the record came from `ai` (classified by Claude) or `manual` (entered by hand).
 
 ---
 

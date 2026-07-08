@@ -35,7 +35,7 @@ The script used to write Hindi, Sanskrit, and several other Indian languages. E.
 The internet's phonebook. It converts a domain like `google.com` into the numeric address of the actual server. You only touch DNS if you attach a custom domain to your app.
 
 ### Extraction
-The act of pulling structured information (product name, outcome, price) out of unstructured text (a spoken conversation). Sunodukaan does this via keyword rules by default, or via Claude in AI Mode.
+The act of pulling structured information (product name, outcome, price) out of unstructured text (a spoken conversation). Sunodukaan does this exclusively by asking Claude (Anthropic's language model) to read each conversation chunk and return classified JSON.
 
 ### GitHub
 A website where developers store code (in **repositories**). It also runs free hosting for simple sites via **GitHub Pages**.
@@ -85,10 +85,8 @@ A short cryptic pattern for finding text inside other text. Sunodukaan uses a re
 ### Repository (repo)
 A folder of files tracked by Git. Yours is `Milan905000/sunodukaan`.
 
-### Rules Mode / AI Mode
-Sunodukaan's two extraction methods.
-- **Rules Mode** (default): fast keyword matching, works offline-ish, no cost.
-- **AI Mode** (optional): calls Claude for smarter understanding, requires an API key and internet, tiny per-call cost.
+### Pending Queue
+When the app captures speech but cannot classify it (no API key set, network down, Anthropic API failure), the chunk of text is saved to a "pending" queue. A banner shows how many are queued, and clicking **Process now** replays them through Claude when the app is ready. Nothing is ever dropped.
 
 ### Schema
 The exact shape a piece of data must have. Sunodukaan tells Claude the schema for extracted interactions so it always responds in the same predictable format.
@@ -109,7 +107,7 @@ An instruction to an AI model that stays constant across a conversation. It tell
 The unit AI models use for both reading and generating text — roughly ¾ of a word. Anthropic charges by tokens: so many rupees per million tokens. See the pricing section of doc #3.
 
 ### Toast
-A small pop-up message that appears at the bottom of the screen for a couple of seconds. Sunodukaan uses toasts to tell you "Interaction saved" or "AI extraction failed — using keyword mode."
+A small pop-up message that appears at the bottom of the screen for a couple of seconds. Sunodukaan uses toasts to tell you "Interaction saved" or "AI extraction failed — chunk queued for retry."
 
 ### Transcript
 The stored history of what was spoken. Every finalized utterance is added to `state.transcript`. You can see today's transcript on the Live tab.

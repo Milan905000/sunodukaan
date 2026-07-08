@@ -26,6 +26,9 @@
   </header>
 
   <main>
+    <!-- Global banner (API key missing / pending queue) -->
+    <div id="key-banner" class="key-banner" hidden></div>
+
     <!-- LIVE TAB -->
     <section class="tab-panel active" id="tab-live">
       <div class="listen-card">
@@ -176,23 +179,19 @@
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>🤖 AI Extraction (optional but recommended)</h2></div>
-        <p class="muted small">Without a key, the app uses smart keyword rules. With an Anthropic API key it uses Claude for much more accurate Hindi understanding. Your key stays on your device — it is never sent anywhere except to Anthropic.</p>
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="setting-ai-enabled" />
-            Use Claude AI for extraction
-          </label>
-        </div>
+        <div class="panel-head"><h2>🤖 AI Extraction (required)</h2></div>
+        <p class="muted small">Sunodukaan uses Claude to read your shop's conversations and classify each customer interaction. Without an Anthropic API key, the app will still record raw transcripts but cannot produce insights until you add one.</p>
         <div class="setting-row">
           <label for="setting-api-key">Anthropic API Key</label>
           <input type="password" id="setting-api-key" placeholder="sk-ant-..." autocomplete="off" />
-          <small>Get one at console.anthropic.com. Stored only in your browser (localStorage).</small>
+          <small>Get one at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>. Stored only in your browser. Never sent anywhere except to Anthropic.</small>
         </div>
         <div class="setting-row">
           <button class="btn-secondary" id="btn-test-ai">Test AI connection</button>
+          <button class="btn-primary" id="btn-process-pending" hidden>Process pending transcripts</button>
           <span id="ai-test-result"></span>
         </div>
+        <p class="muted small">Cost: Claude Haiku 4.5 is used — roughly ₹0.03 per customer interaction. About ₹5-30 per month for a typical shop.</p>
       </div>
 
       <div class="panel">
