@@ -116,6 +116,30 @@ main { padding: 20px; max-width: 1200px; margin: 0 auto; }
 }
 .listen-status { color: var(--muted); margin: 0; text-align: center; font-size: 14px; }
 
+.level-meter {
+  width: 100%; max-width: 260px; height: 8px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 999px; overflow: hidden; margin: 4px auto 0;
+}
+.level-bar {
+  height: 100%; width: 0;
+  background: linear-gradient(90deg, #10b981, #f59e0b, #ef4444);
+  transition: width 60ms linear;
+  border-radius: 999px;
+}
+.level-bar[data-speaking="1"] { box-shadow: 0 0 10px rgba(16,185,129,0.6); }
+
+.rec-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; min-height: 22px; }
+.rec-badge {
+  font-size: 11px; padding: 3px 10px; border-radius: 999px;
+  opacity: 0; transition: opacity 0.15s;
+  border: 1px solid var(--border);
+}
+.rec-badge.active { opacity: 1; }
+.rec-live.active { background: rgba(239, 68, 68, 0.18); color: #f87171; border-color: rgba(239,68,68,0.4); animation: recPulse 1.4s ease-in-out infinite; }
+.rec-tx.active   { background: rgba(99, 102, 241, 0.18); color: #a5b4fc; border-color: rgba(99,102,241,0.4); }
+@keyframes recPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+
 .quick-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; width: 100%; margin-top: 8px; }
 .qs {
   background: var(--panel-2); border: 1px solid var(--border);

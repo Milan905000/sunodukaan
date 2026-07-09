@@ -13,6 +13,9 @@
       autoRestart: true,
       apiKey: DEFAULT_API_KEY,
       model: 'gpt-5.5',
+      asrMode: 'whisper',            // 'whisper' | 'browser'
+      whisperModel: 'whisper-1',
+      vadSensitivity: 'medium',      // 'low' | 'medium' | 'high'
     },
     interactions: [],   // {id, ts, product, outcome, price, reason, snippet, notes, source}
     transcript: [],     // {id, ts, text}
@@ -49,8 +52,9 @@
   const timeFmt = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const dateFmt = ts => new Date(ts).toLocaleDateString();
 
-  // ----------- AI (Bifrost gateway) extraction — the only classifier ------------
+  // ----------- Bifrost gateway endpoints ------------
   const AI_ENDPOINT = 'https://gateway-buildathon.ltl.sh/v1/chat/completions';
+  const TRANSCRIBE_ENDPOINT = 'https://gateway-buildathon.ltl.sh/v1/audio/transcriptions';
   const AVAILABLE_MODELS = ['gpt-5.5', 'gpt-4o'];
   const AI_SYSTEM = `You extract structured retail-shop customer interactions from short conversation snippets between a shopkeeper (kirana / grocery / FMCG store owner in India) and their customers. The speech will be in Hindi, English, Hinglish (mixed), or another Indian language. The transcript is imperfect — expect misspellings, spoken numerals, brand names, and casual grammar.
 
@@ -85,6 +89,16 @@ Rules for extraction:
 5. If the classification would be lost_expensive_here vs lost_cheaper_elsewhere and both signals appear, prefer lost_cheaper_elsewhere (it's the more specific reason).
 6. Do not invent outcomes. If truly ambiguous, use "unclear".
 7. If nothing product-related is found, return {"interactions": []}.
+
+🛑 STOP OVER-CLASSIFYING AS "sold" — these safety rails override the outcome definitions above:
+- If the entire input is fewer than 5 words OR looks garbled / incomplete (just noise words like "haan hai theek hai" with no product context) → return {"interactions": []}. Do NOT invent a product or a sale.
+- A "sold" outcome requires TWO independent signals in the transcript:
+    (a) an affirmation from the customer ("haan", "theek hai", "chalo", "ok", "de do", "le lunga"), AND
+    (b) either a price mentioned by the shopkeeper OR an explicit purchase verb aimed at this shop ("de do", "pack karo", "le lunga", "lena hai", "pack it").
+  If only (a) is present without (b), classify as "unclear" — not "sold".
+- If the shopkeeper quoted a price but the customer never explicitly confirmed, that is NOT a sale — it is either "unclear" or "lost_*" depending on other signals. Do not assume the sale went through just because a price was mentioned.
+- If the transcript contains any refusal cue at all ("mahenga", "sasta", "chodo", "rehne do", "nahi", "wahan mil raha", "usse le lo") → the outcome cannot be "sold" even if the very last word was "theek hai".
+- DEFAULT BIAS: when torn between "sold" and any other outcome, pick the other outcome. When torn between "unclear" and "sold", pick "unclear".
 
 ⚠️ CRITICAL — resolve who is agreeing with whom before classifying:
 - A "sold" outcome ONLY applies when the customer commits to buying FROM THIS SHOP. Phrases like "theek hai", "le lete hain", "ok", "haan", "chalo" are AMBIGUOUS on their own — you must check the immediately preceding context.
@@ -241,11 +255,203 @@ Examples:
     updateKeyMissingBanner();
   }
 
-  // ----------- Speech recognition ------------
+  // ----------- Speech recognition — dual mode (Whisper via Bifrost, or browser Web Speech) ------------
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognition = null;
   let listening = false;
   let manualStop = false;
+  let activeMode = null;  // 'whisper' | 'browser'
+
+  // --- Whisper mode: MediaRecorder + Voice Activity Detection ---
+  const VAD_PROFILES = {
+    low:    { threshold: 0.010, minSpeechMs: 220, minSilenceMs: 1500 },  // more sensitive; picks up quieter speech
+    medium: { threshold: 0.018, minSpeechMs: 260, minSilenceMs: 1200 },  // default
+    high:   { threshold: 0.030, minSpeechMs: 300, minSilenceMs: 900  },  // less sensitive; noisier shops
+  };
+  const VAD_MAX_SEGMENT_MS = 25000;   // hard cap on any single recording segment
+  const VAD_POLL_MS        = 60;      // how often to sample the mic level
+  let audioStream = null;
+  let audioCtx = null;
+  let analyser = null;
+  let vadTimer = null;
+  let segRecorder = null;
+  let segChunks = [];
+  let segStartTs = 0;
+  let inSpeech = false;
+  let speechAboveSince = 0;
+  let silenceSince = 0;
+  let currentMime = '';
+  let whisperInFlight = 0;
+
+  function pickAudioMime() {
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4;codecs=mp4a.40.2',
+      'audio/mp4',
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+    ];
+    for (const c of candidates) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c;
+    }
+    return '';
+  }
+  function extForMime(mime) {
+    if (mime.includes('webm')) return 'webm';
+    if (mime.includes('mp4')) return 'm4a';
+    if (mime.includes('ogg')) return 'ogg';
+    return 'bin';
+  }
+  function whisperLang(langTag) {
+    // Map BCP-47 (e.g. hi-IN) → ISO-639-1 for Whisper
+    return (langTag || 'hi-IN').split('-')[0].toLowerCase();
+  }
+
+  async function startWhisperMode() {
+    if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('MediaRecorder / getUserMedia not supported');
+    }
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    currentMime = pickAudioMime();
+    if (!currentMime) throw new Error('No supported audio codec for MediaRecorder');
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(audioStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.5;
+    source.connect(analyser);
+    inSpeech = false;
+    speechAboveSince = 0;
+    silenceSince = 0;
+    tickVAD();
+  }
+
+  function tickVAD() {
+    if (!analyser) return;
+    const buf = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / buf.length);
+    updateLevelMeter(rms);
+
+    const cfg = VAD_PROFILES[state.settings.vadSensitivity] || VAD_PROFILES.medium;
+    const now = performance.now();
+
+    if (rms > cfg.threshold) {
+      silenceSince = 0;
+      if (!inSpeech) {
+        if (!speechAboveSince) speechAboveSince = now;
+        else if (now - speechAboveSince >= cfg.minSpeechMs) {
+          startSegment();
+          inSpeech = true;
+        }
+      }
+    } else {
+      speechAboveSince = 0;
+      if (inSpeech) {
+        if (!silenceSince) silenceSince = now;
+        else if (now - silenceSince >= cfg.minSilenceMs) {
+          endSegment();
+          inSpeech = false;
+          silenceSince = 0;
+        }
+      }
+    }
+
+    // Cap a single continuous segment
+    if (inSpeech && segStartTs && (Date.now() - segStartTs) > VAD_MAX_SEGMENT_MS) {
+      endSegment();
+      startSegment();
+    }
+
+    vadTimer = setTimeout(tickVAD, VAD_POLL_MS);
+  }
+
+  function startSegment() {
+    if (!audioStream) return;
+    try {
+      segChunks = [];
+      segStartTs = Date.now();
+      segRecorder = new MediaRecorder(audioStream, { mimeType: currentMime });
+      segRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) segChunks.push(e.data); };
+      segRecorder.onstop = () => {
+        const blob = new Blob(segChunks, { type: currentMime });
+        segChunks = [];
+        if (blob.size > 1500) {
+          transcribeBlob(blob).catch(err => console.error('transcribe failed', err));
+        }
+      };
+      segRecorder.start();
+      setRecordingIndicator(true);
+    } catch (e) {
+      console.error('startSegment failed', e);
+    }
+  }
+
+  function endSegment() {
+    try {
+      if (segRecorder && segRecorder.state === 'recording') segRecorder.stop();
+    } catch (e) { console.warn(e); }
+    segRecorder = null;
+    setRecordingIndicator(false);
+  }
+
+  async function transcribeBlob(blob) {
+    const key = state.settings.apiKey?.trim();
+    if (!key) {
+      toast('Add your Bifrost API key first (⚙️ Settings)');
+      return;
+    }
+    whisperInFlight++;
+    setTranscribingIndicator(true);
+    try {
+      const form = new FormData();
+      form.append('file', blob, `audio.${extForMime(currentMime)}`);
+      form.append('model', state.settings.whisperModel || 'whisper-1');
+      form.append('language', whisperLang(state.settings.lang));
+      form.append('response_format', 'json');
+      const res = await fetch(TRANSCRIBE_ENDPOINT, {
+        method: 'POST',
+        headers: { 'authorization': `Bearer ${key}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`Whisper ${res.status} ${txt.slice(0, 160)}`);
+      }
+      const data = await res.json();
+      const text = (data && data.text) ? data.text.trim() : '';
+      if (text && text.length > 1) {
+        addUtterance(text);
+      }
+    } catch (e) {
+      console.error('transcribeBlob error', e);
+      toast('Transcription failed: ' + e.message.slice(0, 80));
+    } finally {
+      whisperInFlight--;
+      if (whisperInFlight <= 0) setTranscribingIndicator(false);
+    }
+  }
+
+  function stopWhisperMode() {
+    if (vadTimer) { clearTimeout(vadTimer); vadTimer = null; }
+    endSegment();
+    if (audioStream) { audioStream.getTracks().forEach(t => t.stop()); audioStream = null; }
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+    analyser = null;
+    updateLevelMeter(0);
+    setRecordingIndicator(false);
+    setTranscribingIndicator(false);
+  }
+
+  // --- Browser (Web Speech API) mode — kept as a fallback ---
+  let recognition = null;
 
   function initRecognition() {
     if (!SR) return null;
@@ -253,77 +459,85 @@ Examples:
     r.continuous = true;
     r.interimResults = true;
     r.lang = state.settings.lang || 'hi-IN';
-    r.onresult = onResult;
-    r.onend = onEnd;
-    r.onerror = onError;
+    r.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        const t = res[0].transcript;
+        if (res.isFinal) addUtterance(t);
+        else interim += t;
+      }
+      const el = document.getElementById('interim');
+      if (el) el.textContent = interim ? '… ' + interim : '';
+    };
+    r.onend = () => {
+      const el = document.getElementById('interim');
+      if (el) el.textContent = '';
+      if (listening && !manualStop && state.settings.autoRestart) {
+        setTimeout(() => { try { recognition && recognition.start(); } catch {} }, 250);
+      } else {
+        listening = false; manualStop = false; updateListenUI();
+      }
+    };
+    r.onerror = e => {
+      console.warn('recognition error', e.error);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        toast('Microphone permission blocked.'); stopListening();
+      } else if (e.error === 'audio-capture') {
+        toast('No microphone detected.'); stopListening();
+      }
+    };
     return r;
   }
 
-  function onResult(event) {
-    let interim = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const res = event.results[i];
-      const t = res[0].transcript;
-      if (res.isFinal) addUtterance(t);
-      else interim += t;
-    }
-    document.getElementById('interim').textContent = interim ? '… ' + interim : '';
-  }
-
-  function onEnd() {
-    document.getElementById('interim').textContent = '';
-    if (listening && !manualStop && state.settings.autoRestart) {
-      // Chrome/Edge stops after a bit of silence; restart
-      setTimeout(() => {
-        try { recognition && recognition.start(); }
-        catch (e) { /* already running */ }
-      }, 250);
-    } else {
-      listening = false;
-      manualStop = false;
-      updateListenUI();
-    }
-  }
-
-  function onError(e) {
-    console.warn('recognition error', e.error);
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      toast('Microphone permission blocked. Enable it in your browser.');
-      stopListening();
-    } else if (e.error === 'audio-capture') {
-      toast('No microphone detected.');
-      stopListening();
-    } else if (e.error === 'no-speech') {
-      // ignore, onEnd will restart
-    } else if (e.error === 'network') {
-      toast('Network error — speech service unreachable.');
-    } else {
-      // network or other — will restart via onEnd
-    }
-  }
-
-  function startListening() {
-    if (!SR) {
-      toast('Speech recognition not supported in this browser. Please use Chrome, Edge, or Safari on desktop/Android.');
-      return;
-    }
-    if (listening) return;
+  function startBrowserMode() {
+    if (!SR) throw new Error('Web Speech API not supported');
     if (!recognition) recognition = initRecognition();
     recognition.lang = state.settings.lang;
+    recognition.start();
+  }
+
+  function stopBrowserMode() {
+    try { recognition && recognition.stop(); } catch {}
+  }
+
+  // --- Public listening controls (router) ---
+  async function startListening() {
+    if (listening) return;
+    const mode = state.settings.asrMode === 'browser' ? 'browser' : 'whisper';
+    manualStop = false;
     try {
-      recognition.start();
+      if (mode === 'whisper') {
+        await startWhisperMode();
+        activeMode = 'whisper';
+      } else {
+        startBrowserMode();
+        activeMode = 'browser';
+      }
       listening = true;
-      manualStop = false;
       updateListenUI();
     } catch (e) {
-      console.warn(e);
+      console.error('startListening error', e);
+      toast('Could not start ' + mode + ' mode: ' + e.message);
+      // Auto-fallback: Whisper → Browser
+      if (mode === 'whisper' && SR) {
+        try {
+          startBrowserMode();
+          activeMode = 'browser';
+          listening = true;
+          toast('Fell back to browser speech recognition');
+          updateListenUI();
+        } catch {}
+      }
     }
   }
 
   function stopListening() {
     manualStop = true;
     listening = false;
-    try { recognition && recognition.stop(); } catch {}
+    if (activeMode === 'whisper') stopWhisperMode();
+    else if (activeMode === 'browser') stopBrowserMode();
+    activeMode = null;
     if (gapTimer) { clearTimeout(gapTimer); gapTimer = null; }
     flushChunk();
     updateListenUI();
@@ -333,17 +547,39 @@ Examples:
     const btn = document.getElementById('btn-listen');
     const label = document.getElementById('listen-label');
     const status = document.getElementById('listen-status');
+    if (!btn) return;
     if (listening) {
       btn.classList.add('listening');
       btn.setAttribute('aria-pressed', 'true');
       label.textContent = 'Stop';
-      status.textContent = `🔴 Listening (${state.settings.lang}) — always-on mode ${state.settings.autoRestart ? 'ON' : 'OFF'}`;
+      const modeLabel = activeMode === 'whisper' ? 'Whisper (voice-triggered)' : 'browser speech';
+      status.textContent = `🔴 Listening · ${modeLabel} · ${state.settings.lang}`;
     } else {
       btn.classList.remove('listening');
       btn.setAttribute('aria-pressed', 'false');
       label.textContent = 'Start Listening';
-      status.textContent = 'Tap the mic to begin. It will listen continuously.';
+      status.textContent = 'Tap the mic to begin. Recording only triggers when speech is detected.';
     }
+  }
+
+  function updateLevelMeter(rms) {
+    const el = document.getElementById('level-bar');
+    if (!el) return;
+    // Map RMS 0..0.2 → 0..100%
+    const pct = Math.min(100, Math.round((rms / 0.2) * 100));
+    el.style.width = pct + '%';
+    const cfg = VAD_PROFILES[state.settings.vadSensitivity] || VAD_PROFILES.medium;
+    el.dataset.speaking = rms > cfg.threshold ? '1' : '0';
+  }
+
+  function setRecordingIndicator(on) {
+    const el = document.getElementById('rec-indicator');
+    if (el) el.classList.toggle('active', !!on);
+  }
+
+  function setTranscribingIndicator(on) {
+    const el = document.getElementById('rec-transcribing');
+    if (el) el.classList.toggle('active', !!on);
   }
 
   // ----------- UI: Tabs ------------
@@ -679,6 +915,24 @@ Examples:
     });
     const ar = $('#setting-auto-restart'); ar.checked = state.settings.autoRestart;
     ar.addEventListener('change', () => { state.settings.autoRestart = ar.checked; save(); });
+
+    const asr = $('#setting-asr-mode');
+    if (asr) {
+      asr.value = state.settings.asrMode || 'whisper';
+      asr.addEventListener('change', () => {
+        state.settings.asrMode = asr.value;
+        save();
+        toast(`Speech engine: ${asr.value === 'whisper' ? 'Whisper' : 'Browser'} — will take effect on next Start`);
+      });
+    }
+    const vad = $('#setting-vad');
+    if (vad) {
+      vad.value = state.settings.vadSensitivity || 'medium';
+      vad.addEventListener('change', () => {
+        state.settings.vadSensitivity = vad.value;
+        save();
+      });
+    }
 
     const k = $('#setting-api-key'); k.value = state.settings.apiKey || '';
     k.addEventListener('change', () => {

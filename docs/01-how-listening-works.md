@@ -4,17 +4,83 @@
 
 ## The very short version
 
-Your phone or laptop has a **microphone**. Modern browsers (Chrome, Edge, Safari) have a built-in feature called the **Web Speech API** that:
+Sunodukaan has **two speech engines** it can use, selectable in **⚙️ Settings → Speech engine**:
 
-1. Reads the microphone,
-2. Sends the audio to Google's (or Apple's) speech engine,
-3. Gets back the words in text form — including Hindi, English, or Hinglish.
+| Mode | How it works | When to use |
+|---|---|---|
+| **Whisper via Bifrost** (default, recommended) | Records short audio bursts *only when speech is detected*, then sends each burst to OpenAI's Whisper model for transcription. Voice Activity Detection (VAD) means the recorder only turns on when someone is actually talking. | Almost always. Much better Hindi/Hinglish accuracy, no session timeouts, low API cost because silence isn't sent. |
+| **Browser (Web Speech API)** | Uses your browser's built-in speech recognition (Google's engine on Chrome/Edge, Apple's on Safari). Streams continuously and transcribes as you speak. | Fallback if Whisper is unreachable, or if you want zero API cost and don't mind the lower accuracy. |
 
-Sunodukaan uses this feature. That's why you don't need any expensive equipment or a paid service — it's all in the browser you already have.
+Both modes feed into the same downstream classifier — the LLM that groups conversations into interactions.
 
 ---
 
-## Step-by-step
+## 🎙️ How Whisper mode works (the default)
+
+Whisper mode uses **Voice Activity Detection (VAD)** so the mic is monitored constantly but recording only kicks in when it detects someone talking. This saves API cost and produces cleaner clips.
+
+### The state machine
+
+```
+       ┌────────────────┐
+       │   MONITORING   │  ← constant, using AudioContext + AnalyserNode
+       └───────┬────────┘
+    Level > threshold for ≥260ms
+               ↓
+       ┌────────────────┐
+       │   RECORDING    │  ← MediaRecorder captures audio into a Blob
+       └───────┬────────┘
+    Level < threshold for ≥1200ms
+               ↓
+       ┌────────────────┐
+       │   TRANSCRIBE   │  ← POST the Blob to Bifrost's /v1/audio/transcriptions
+       └───────┬────────┘
+     Whisper returns text
+               ↓
+       ┌────────────────┐
+       │  ADD TO LOG    │  ← addUtterance(text) — same as any transcript
+       └───────┬────────┘
+               └─→ back to MONITORING
+```
+
+Practical numbers used in the code:
+
+- **Voice threshold**: RMS ≈ 0.018 on the medium setting. You can shift this via the *Voice-detection sensitivity* dropdown (`low` / `medium` / `high`).
+- **Speech onset delay**: 260 ms — filters out short thumps or clicks.
+- **Silence trailing time**: 1200 ms — long enough to survive a comma-pause mid-sentence, short enough to close the segment when the customer walks away.
+- **Max segment length**: 25 s — a hard cap so runaway recordings can't happen. If someone talks for 30 s straight, it splits into two segments seamlessly.
+
+### What you see on the Live tab
+
+- **Level meter** — a coloured bar that reflects real-time audio input. Watch it move when you speak to confirm the mic is working.
+- **● Recording segment** — a red badge that lights up when the VAD has fired and a real audio segment is being captured.
+- **✎ Transcribing** — a blue badge that lights up while a completed segment is being sent to Whisper for transcription (typically < 2 s per segment).
+
+### What Whisper receives
+
+Every completed segment is packaged as a WebM (or MP4 / OGG, depending on your browser) blob and POSTed to Bifrost:
+
+```
+POST https://gateway-buildathon.ltl.sh/v1/audio/transcriptions
+Authorization: Bearer <your key>
+
+file:      <audio blob, typically 1-10 seconds, 5-100 KB>
+model:     whisper-1
+language:  hi           (from your language setting, ISO-639-1)
+response_format: json
+```
+
+Whisper returns `{"text": "…"}`. That text becomes an utterance on the Live transcript.
+
+### Cost — why VAD matters
+
+Whisper API costs ~$0.006 per minute of audio (~₹0.50 / min). Without VAD, an 8-hour shop day would cost roughly ₹240. **With VAD**, only actual speech segments are transcribed. In a typical shop where speech happens for maybe 90 minutes out of 8 hours, that drops to about **₹45/day** — an ~80% reduction.
+
+---
+
+## 🎧 How Browser (Web Speech API) mode works
+
+This is the fallback mode and simpler. The code below is what runs when you switch to Browser mode.
 
 ### Step 1 — You tap "Start Listening"
 

@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Sunodukaan — Voice Analytics for Your Shop</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🛒%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
   <header class="app-header">
@@ -40,7 +40,14 @@
           <span class="mic-icon">🎤</span>
           <span id="listen-label">Start Listening</span>
         </button>
-        <p id="listen-status" class="listen-status">Tap the mic to begin. It will listen continuously.</p>
+        <div class="level-meter" aria-hidden="true">
+          <div id="level-bar" class="level-bar" data-speaking="0"></div>
+        </div>
+        <div class="rec-badges">
+          <span id="rec-indicator" class="rec-badge rec-live">● Recording segment</span>
+          <span id="rec-transcribing" class="rec-badge rec-tx">✎ Transcribing</span>
+        </div>
+        <p id="listen-status" class="listen-status">Tap the mic to begin. Recording only triggers when speech is detected.</p>
         <div class="quick-stats">
           <div class="qs"><span class="qs-num" id="qs-total">0</span><span class="qs-label">Interactions today</span></div>
           <div class="qs"><span class="qs-num" id="qs-reorder">0</span><span class="qs-label">To reorder</span></div>
@@ -157,6 +164,23 @@
       <div class="panel">
         <div class="panel-head"><h2>🎧 Recognition</h2></div>
         <div class="setting-row">
+          <label for="setting-asr-mode">Speech engine</label>
+          <select id="setting-asr-mode">
+            <option value="whisper">Whisper via Bifrost (recommended — voice-triggered)</option>
+            <option value="browser">Browser (Web Speech API — fallback)</option>
+          </select>
+          <small>Whisper records only when speech is detected and sends short audio bursts for transcription. Much more accurate for Hindi/Hinglish shop conversations.</small>
+        </div>
+        <div class="setting-row">
+          <label for="setting-vad">Voice-detection sensitivity</label>
+          <select id="setting-vad">
+            <option value="low">Low — picks up quiet speech (may pick up more noise)</option>
+            <option value="medium">Medium — default</option>
+            <option value="high">High — only clear speech (best for noisy shops)</option>
+          </select>
+          <small>Applies to Whisper mode. Increase if the mic keeps triggering on ambient noise; decrease if soft speech is being missed.</small>
+        </div>
+        <div class="setting-row">
           <label for="setting-lang">Language</label>
           <select id="setting-lang">
             <option value="hi-IN">Hindi (India) — हिन्दी</option>
@@ -176,7 +200,7 @@
         <div class="setting-row">
           <label>
             <input type="checkbox" id="setting-auto-restart" checked />
-            Auto-restart on silence (always-on mode)
+            Auto-restart on silence (browser-mode only — Whisper handles this natively)
           </label>
         </div>
       </div>
@@ -274,6 +298,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>
