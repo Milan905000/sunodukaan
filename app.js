@@ -312,6 +312,130 @@ Examples:
     return (langTag || 'hi-IN').split('-')[0].toLowerCase();
   }
 
+  // --- WAV encoder (for models that don't accept WebM/MP4 directly) ---
+  function audioBufferToWav(buffer) {
+    const numFrames = buffer.length;
+    const sampleRate = buffer.sampleRate;
+    const numChannels = buffer.numberOfChannels;
+    // Mix down to mono — voice models don't benefit from stereo and it halves the upload size.
+    const mono = new Float32Array(numFrames);
+    if (numChannels === 1) {
+      mono.set(buffer.getChannelData(0));
+    } else {
+      for (let ch = 0; ch < numChannels; ch++) {
+        const data = buffer.getChannelData(ch);
+        for (let i = 0; i < numFrames; i++) mono[i] += data[i] / numChannels;
+      }
+    }
+    const bytesPerSample = 2;
+    const dataSize = numFrames * bytesPerSample;
+    const bufferSize = 44 + dataSize;
+    const ab = new ArrayBuffer(bufferSize);
+    const view = new DataView(ab);
+    const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, bufferSize - 8, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);              // PCM
+    view.setUint16(22, 1, true);              // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * bytesPerSample, true);
+    view.setUint16(32, bytesPerSample, true);
+    view.setUint16(34, 16, true);             // 16-bit
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+    let offset = 44;
+    for (let i = 0; i < numFrames; i++) {
+      const s = Math.max(-1, Math.min(1, mono[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      offset += 2;
+    }
+    return new Blob([ab], { type: 'audio/wav' });
+  }
+  async function blobToBase64(blob) {
+    const ab = await blob.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+    let binary = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  }
+
+  // --- Chat-audio transcription (gpt-4o-audio via /v1/chat/completions) ---
+  const CHAT_AUDIO_MODEL_CANDIDATES = ['gpt-4o-audio-preview', 'gpt-4o-audio', 'gpt-4o-mini-audio-preview'];
+  let workingChatAudioModel = null;
+
+  async function attemptChatAudioCall(base64Wav, model) {
+    const langHint = whisperLang(state.settings.lang);
+    const body = {
+      model,
+      modalities: ['text'],
+      temperature: 0,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: `Transcribe this audio verbatim. It is in ${langHint === 'hi' ? 'Hindi or Hinglish' : langHint}. Return ONLY the transcribed text — no translation, no explanation, no quotes.` },
+          { type: 'input_audio', input_audio: { data: base64Wav, format: 'wav' } },
+        ],
+      }],
+    };
+    const res = await fetch(AI_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'authorization': `Bearer ${state.settings.apiKey.trim()}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const txt = await res.text();
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status} · model="${model}" · ${txt.slice(0, 200)}`);
+      err.status = res.status;
+      throw err;
+    }
+    let data;
+    try { data = JSON.parse(txt); }
+    catch { throw new Error(`Non-JSON response from chat-audio: ${txt.slice(0, 200)}`); }
+    return (data?.choices?.[0]?.message?.content || '').trim();
+  }
+
+  async function transcribeViaChatAudio(blob) {
+    // Convert MediaRecorder blob → WAV using AudioContext
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    let wavBase64;
+    try {
+      const ab = await blob.arrayBuffer();
+      const audioBuf = await ac.decodeAudioData(ab);
+      const wav = audioBufferToWav(audioBuf);
+      wavBase64 = await blobToBase64(wav);
+    } finally {
+      ac.close().catch(() => {});
+    }
+
+    const models = [];
+    if (workingChatAudioModel) models.push(workingChatAudioModel);
+    for (const m of CHAT_AUDIO_MODEL_CANDIDATES) if (!models.includes(m)) models.push(m);
+
+    const errors = [];
+    for (const model of models) {
+      try {
+        const text = await attemptChatAudioCall(wavBase64, model);
+        workingChatAudioModel = model;
+        return { text, model };
+      } catch (e) {
+        errors.push(`${model} → ${e.message.slice(0, 160)}`);
+        if (e.status === 401 || e.status === 403) break;
+      }
+    }
+    const err = new Error(errors.join('  |  '));
+    err.attempts = errors;
+    throw err;
+  }
+
   async function startWhisperMode() {
     if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('MediaRecorder / getUserMedia not supported');
@@ -431,6 +555,44 @@ Examples:
     return (data && data.text) ? data.text.trim() : '';
   }
 
+  // Track which strategy has proven to work for THIS gateway.
+  // Once a strategy works, we keep using it (no re-probing per segment).
+  let workingStrategy = null;   // 'whisper' | 'chat-audio' | null
+
+  async function tryWhisperStrategy(blob) {
+    const preferred = (state.settings.whisperModel || '').trim();
+    const models = [];
+    if (preferred) models.push(preferred);
+    if (workingWhisperModel && !models.includes(workingWhisperModel)) models.push(workingWhisperModel);
+    for (const m of WHISPER_MODEL_CANDIDATES) if (!models.includes(m)) models.push(m);
+    const errors = [];
+    for (const model of models) {
+      try {
+        const text = await attemptWhisperCall(blob, model);
+        workingWhisperModel = model;
+        return { text, path: `Whisper (${model})` };
+      } catch (e) {
+        errors.push(`whisper:${model} → ${e.message.slice(0, 160)}`);
+        if (e.status === 401 || e.status === 403) break;
+      }
+    }
+    const err = new Error(errors.join('  |  '));
+    err.attempts = errors;
+    throw err;
+  }
+
+  async function tryChatAudioStrategy(blob) {
+    try {
+      const { text, model } = await transcribeViaChatAudio(blob);
+      return { text, path: `Chat-audio (${model})` };
+    } catch (e) {
+      const attempts = (e.attempts || [e.message]).map(a => 'chat-audio:' + a);
+      const err = new Error(attempts.join('  |  '));
+      err.attempts = attempts;
+      throw err;
+    }
+  }
+
   async function transcribeBlob(blob) {
     const key = state.settings.apiKey?.trim();
     if (!key) {
@@ -440,49 +602,46 @@ Examples:
     whisperInFlight++;
     setTranscribingIndicator(true);
     try {
-      // Model priority: user-configured → previously-working → candidates list.
-      const preferred = (state.settings.whisperModel || '').trim();
-      const models = [];
-      if (preferred) models.push(preferred);
-      if (workingWhisperModel && !models.includes(workingWhisperModel)) models.push(workingWhisperModel);
-      for (const m of WHISPER_MODEL_CANDIDATES) if (!models.includes(m)) models.push(m);
+      // Strategy order: previously-working first, then the rest.
+      const strategies = [];
+      const push = (name) => { if (!strategies.includes(name)) strategies.push(name); };
+      if (workingStrategy) push(workingStrategy);
+      push('whisper');
+      push('chat-audio');
 
       const errors = [];
-      let text = '';
-      let successModel = null;
-      for (const model of models) {
+      let successResult = null;
+      for (const strat of strategies) {
         try {
-          text = await attemptWhisperCall(blob, model);
-          successModel = model;
+          if (strat === 'whisper') successResult = await tryWhisperStrategy(blob);
+          else if (strat === 'chat-audio') successResult = await tryChatAudioStrategy(blob);
+          workingStrategy = strat;
           break;
         } catch (e) {
-          errors.push(`${model} → ${e.message.slice(0, 120)}`);
-          // 401/403 will fail for every model — no point continuing.
-          if (e.status === 401 || e.status === 403) break;
+          errors.push(...(e.attempts || [e.message]));
         }
       }
 
-      if (successModel) {
-        workingWhisperModel = successModel;
+      if (successResult) {
         whisperConsecFailures = 0;
         lastWhisperError = '';
-        if (text && text.length > 1) addUtterance(text);
+        if (successResult.text && successResult.text.length > 1) {
+          addUtterance(successResult.text);
+        }
         return;
       }
 
-      // All models failed.
+      // Both strategies failed.
       whisperConsecFailures++;
-      lastWhisperError = errors.join('  |  ');
-      console.error('Whisper failed. Attempts:', errors);
+      lastWhisperError = errors.join('\n\n');
+      console.error('Transcription failed. Attempts:', errors);
       updateDiagnosticPanel();
-      // Show the ACTUAL error, not a truncated one.
-      toast(`Transcription failed (${whisperConsecFailures}/${WHISPER_MAX_FAILS_BEFORE_FALLBACK}): ${errors[0] || 'unknown'}`);
+      toast(`Transcription failed (${whisperConsecFailures}/${WHISPER_MAX_FAILS_BEFORE_FALLBACK}) — see Settings diagnostic`);
 
       if (whisperConsecFailures >= WHISPER_MAX_FAILS_BEFORE_FALLBACK) {
-        toast('Whisper is not reachable via this gateway — switching to browser speech recognition');
+        toast('Audio transcription unavailable via this gateway — switching to browser speech recognition');
         state.settings.asrMode = 'browser';
         save();
-        // Restart with browser mode
         if (listening) {
           stopWhisperMode();
           listening = false;
@@ -656,9 +815,10 @@ Examples:
     const out = document.getElementById('whisper-test-result');
     const key = state.settings.apiKey?.trim();
     if (!key) { out.textContent = '❌ Add API key first'; return; }
-    out.textContent = 'Recording 2s of test audio…';
+    out.textContent = 'Recording 3s of test audio (say something)…';
+    let stream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mime = pickAudioMime();
       currentMime = mime;
       const chunks = [];
@@ -666,37 +826,46 @@ Examples:
       rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
       const done = new Promise(resolve => { rec.onstop = () => resolve(); });
       rec.start();
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 3000));
       rec.stop();
       await done;
       stream.getTracks().forEach(t => t.stop());
       const blob = new Blob(chunks, { type: mime });
-      out.textContent = `Uploading ${(blob.size / 1024).toFixed(1)} KB to Bifrost…`;
-
-      const preferred = (state.settings.whisperModel || '').trim();
-      const models = [];
-      if (preferred) models.push(preferred);
-      for (const m of WHISPER_MODEL_CANDIDATES) if (!models.includes(m)) models.push(m);
+      out.textContent = `Probing gateway with ${(blob.size / 1024).toFixed(1)} KB…`;
 
       const attempts = [];
-      for (const model of models) {
-        try {
-          const text = await attemptWhisperCall(blob, model);
-          workingWhisperModel = model;
-          lastWhisperError = '';
-          updateDiagnosticPanel();
-          out.innerHTML = `✅ Works with model <code>${model}</code>${text ? ` · returned: "${text.slice(0, 60)}"` : ' · (audio was silent)'}`;
-          return;
-        } catch (e) {
-          attempts.push(`${model} → ${e.message.slice(0, 200)}`);
-          if (e.status === 401 || e.status === 403) break;
-        }
+
+      // Strategy 1: Whisper endpoint
+      try {
+        const { text, path } = await tryWhisperStrategy(blob);
+        workingStrategy = 'whisper';
+        lastWhisperError = '';
+        updateDiagnosticPanel();
+        out.innerHTML = `✅ ${path}${text ? ` · returned: "${escapeHtml(text.slice(0, 60))}"` : ' · (silent)'}`;
+        return;
+      } catch (e) {
+        attempts.push(...(e.attempts || [e.message]));
       }
+
+      // Strategy 2: chat-audio (gpt-4o-audio-preview via /v1/chat/completions)
+      try {
+        out.textContent = `Whisper endpoint failed — trying gpt-4o-audio via chat…`;
+        const { text, path } = await tryChatAudioStrategy(blob);
+        workingStrategy = 'chat-audio';
+        lastWhisperError = '';
+        updateDiagnosticPanel();
+        out.innerHTML = `✅ ${path}${text ? ` · returned: "${escapeHtml(text.slice(0, 60))}"` : ' · (silent)'}`;
+        return;
+      } catch (e) {
+        attempts.push(...(e.attempts || [e.message]));
+      }
+
       lastWhisperError = attempts.join('\n\n');
       updateDiagnosticPanel();
-      out.textContent = `❌ All models failed — see diagnostic below`;
+      out.textContent = '❌ Both Whisper endpoint and gpt-4o-audio failed — see diagnostic';
     } catch (e) {
       out.textContent = '❌ ' + e.message;
+      if (stream) stream.getTracks().forEach(t => t.stop());
     }
   }
 
