@@ -281,6 +281,11 @@ Examples:
   let silenceSince = 0;
   let currentMime = '';
   let whisperInFlight = 0;
+  let whisperConsecFailures = 0;
+  let lastWhisperError = '';
+  let workingWhisperModel = null;   // remembered after first success
+  const WHISPER_MODEL_CANDIDATES = ['whisper-1', 'whisper-large-v3', 'openai/whisper-1', 'whisper'];
+  const WHISPER_MAX_FAILS_BEFORE_FALLBACK = 3;
 
   function pickAudioMime() {
     const candidates = [
@@ -402,6 +407,30 @@ Examples:
     setRecordingIndicator(false);
   }
 
+  async function attemptWhisperCall(blob, model) {
+    const form = new FormData();
+    form.append('file', blob, `audio.${extForMime(currentMime)}`);
+    form.append('model', model);
+    form.append('language', whisperLang(state.settings.lang));
+    form.append('response_format', 'json');
+    const res = await fetch(TRANSCRIBE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'authorization': `Bearer ${state.settings.apiKey.trim()}` },
+      body: form,
+    });
+    const bodyText = await res.text();
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status} · model="${model}" · ${bodyText.slice(0, 240)}`);
+      err.status = res.status;
+      err.body = bodyText;
+      throw err;
+    }
+    let data;
+    try { data = JSON.parse(bodyText); }
+    catch { throw new Error(`Non-JSON response: ${bodyText.slice(0, 240)}`); }
+    return (data && data.text) ? data.text.trim() : '';
+  }
+
   async function transcribeBlob(blob) {
     const key = state.settings.apiKey?.trim();
     if (!key) {
@@ -411,28 +440,56 @@ Examples:
     whisperInFlight++;
     setTranscribingIndicator(true);
     try {
-      const form = new FormData();
-      form.append('file', blob, `audio.${extForMime(currentMime)}`);
-      form.append('model', state.settings.whisperModel || 'whisper-1');
-      form.append('language', whisperLang(state.settings.lang));
-      form.append('response_format', 'json');
-      const res = await fetch(TRANSCRIBE_ENDPOINT, {
-        method: 'POST',
-        headers: { 'authorization': `Bearer ${key}` },
-        body: form,
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        throw new Error(`Whisper ${res.status} ${txt.slice(0, 160)}`);
+      // Model priority: user-configured → previously-working → candidates list.
+      const preferred = (state.settings.whisperModel || '').trim();
+      const models = [];
+      if (preferred) models.push(preferred);
+      if (workingWhisperModel && !models.includes(workingWhisperModel)) models.push(workingWhisperModel);
+      for (const m of WHISPER_MODEL_CANDIDATES) if (!models.includes(m)) models.push(m);
+
+      const errors = [];
+      let text = '';
+      let successModel = null;
+      for (const model of models) {
+        try {
+          text = await attemptWhisperCall(blob, model);
+          successModel = model;
+          break;
+        } catch (e) {
+          errors.push(`${model} → ${e.message.slice(0, 120)}`);
+          // 401/403 will fail for every model — no point continuing.
+          if (e.status === 401 || e.status === 403) break;
+        }
       }
-      const data = await res.json();
-      const text = (data && data.text) ? data.text.trim() : '';
-      if (text && text.length > 1) {
-        addUtterance(text);
+
+      if (successModel) {
+        workingWhisperModel = successModel;
+        whisperConsecFailures = 0;
+        lastWhisperError = '';
+        if (text && text.length > 1) addUtterance(text);
+        return;
       }
-    } catch (e) {
-      console.error('transcribeBlob error', e);
-      toast('Transcription failed: ' + e.message.slice(0, 80));
+
+      // All models failed.
+      whisperConsecFailures++;
+      lastWhisperError = errors.join('  |  ');
+      console.error('Whisper failed. Attempts:', errors);
+      updateDiagnosticPanel();
+      // Show the ACTUAL error, not a truncated one.
+      toast(`Transcription failed (${whisperConsecFailures}/${WHISPER_MAX_FAILS_BEFORE_FALLBACK}): ${errors[0] || 'unknown'}`);
+
+      if (whisperConsecFailures >= WHISPER_MAX_FAILS_BEFORE_FALLBACK) {
+        toast('Whisper is not reachable via this gateway — switching to browser speech recognition');
+        state.settings.asrMode = 'browser';
+        save();
+        // Restart with browser mode
+        if (listening) {
+          stopWhisperMode();
+          listening = false;
+          activeMode = null;
+          await startListening();
+        }
+      }
     } finally {
       whisperInFlight--;
       if (whisperInFlight <= 0) setTranscribingIndicator(false);
@@ -580,6 +637,67 @@ Examples:
   function setTranscribingIndicator(on) {
     const el = document.getElementById('rec-transcribing');
     if (el) el.classList.toggle('active', !!on);
+  }
+
+  function updateDiagnosticPanel() {
+    const panel = document.getElementById('whisper-diagnostic');
+    const body = document.getElementById('whisper-diagnostic-body');
+    if (!panel || !body) return;
+    if (lastWhisperError) {
+      panel.hidden = false;
+      body.textContent = lastWhisperError;
+    } else {
+      panel.hidden = true;
+      body.textContent = '';
+    }
+  }
+
+  async function testWhisperConnection() {
+    const out = document.getElementById('whisper-test-result');
+    const key = state.settings.apiKey?.trim();
+    if (!key) { out.textContent = '❌ Add API key first'; return; }
+    out.textContent = 'Recording 2s of test audio…';
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = pickAudioMime();
+      currentMime = mime;
+      const chunks = [];
+      const rec = new MediaRecorder(stream, { mimeType: mime });
+      rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      const done = new Promise(resolve => { rec.onstop = () => resolve(); });
+      rec.start();
+      await new Promise(r => setTimeout(r, 2000));
+      rec.stop();
+      await done;
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(chunks, { type: mime });
+      out.textContent = `Uploading ${(blob.size / 1024).toFixed(1)} KB to Bifrost…`;
+
+      const preferred = (state.settings.whisperModel || '').trim();
+      const models = [];
+      if (preferred) models.push(preferred);
+      for (const m of WHISPER_MODEL_CANDIDATES) if (!models.includes(m)) models.push(m);
+
+      const attempts = [];
+      for (const model of models) {
+        try {
+          const text = await attemptWhisperCall(blob, model);
+          workingWhisperModel = model;
+          lastWhisperError = '';
+          updateDiagnosticPanel();
+          out.innerHTML = `✅ Works with model <code>${model}</code>${text ? ` · returned: "${text.slice(0, 60)}"` : ' · (audio was silent)'}`;
+          return;
+        } catch (e) {
+          attempts.push(`${model} → ${e.message.slice(0, 200)}`);
+          if (e.status === 401 || e.status === 403) break;
+        }
+      }
+      lastWhisperError = attempts.join('\n\n');
+      updateDiagnosticPanel();
+      out.textContent = `❌ All models failed — see diagnostic below`;
+    } catch (e) {
+      out.textContent = '❌ ' + e.message;
+    }
   }
 
   // ----------- UI: Tabs ------------
@@ -933,6 +1051,19 @@ Examples:
         save();
       });
     }
+    const wm = $('#setting-whisper-model');
+    if (wm) {
+      wm.value = state.settings.whisperModel || '';
+      wm.addEventListener('change', () => {
+        state.settings.whisperModel = wm.value.trim();
+        workingWhisperModel = null; // reset auto-detect
+        save();
+        toast('Whisper model updated');
+      });
+    }
+    const tw = $('#btn-test-whisper');
+    if (tw) tw.addEventListener('click', testWhisperConnection);
+    updateDiagnosticPanel();
 
     const k = $('#setting-api-key'); k.value = state.settings.apiKey || '';
     k.addEventListener('change', () => {

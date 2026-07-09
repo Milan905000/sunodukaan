@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Sunodukaan — Voice Analytics for Your Shop</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🛒%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=6" />
 </head>
 <body>
   <header class="app-header">
@@ -203,6 +203,19 @@
             Auto-restart on silence (browser-mode only — Whisper handles this natively)
           </label>
         </div>
+        <div class="setting-row">
+          <label for="setting-whisper-model">Whisper model (override)</label>
+          <input type="text" id="setting-whisper-model" placeholder="whisper-1 (leave blank to auto-detect)" />
+          <small>The app auto-tries whisper-1, whisper-large-v3, and a couple more. Fill this in only if your Bifrost gateway uses a specific model name.</small>
+        </div>
+        <div class="setting-row">
+          <button class="btn-secondary" id="btn-test-whisper">🎙️ Test Whisper connection</button>
+          <span id="whisper-test-result"></span>
+        </div>
+        <div id="whisper-diagnostic" class="diagnostic" hidden>
+          <strong>Last transcription error:</strong>
+          <pre id="whisper-diagnostic-body"></pre>
+        </div>
       </div>
 
       <div class="panel">
@@ -298,6 +311,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>
